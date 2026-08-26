@@ -14,6 +14,29 @@ Method: the LLM-as-a-Verifier paper — fine-grained reward as the expectation
 over the verifier's top-20 logprob distribution at the score position
 (arXiv:2607.05391).
 
+## Installation
+
+Requires a [DeepSeek Harness](https://github.com/deepseek-ai/dsh) profile
+(web or headless). Add the plugin to the target profile:
+
+```bash
+# from npm (after publication)
+dsh plugin --profile web add dsh-llm-verifier-pro
+
+# or from a local checkout / path
+dsh plugin --profile web add /path/to/dsh-llm-verifier-pro
+```
+
+The plugin registers as the bundle row `llm-verifier-pro`. Then configure it in
+the profile's patch layer (see [Configuration](#configuration) below), restart
+`dsh web`, and the plugin exposes:
+
+- three `verify_*` tools to every agent;
+- the `verifier-pro` settings section in the Web UI (Best-of-N panel);
+- the optional Best-of-N conversation mode (off by default).
+
+Full walkthrough: [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md).
+
 ## Three faces
 
 ### 1. Tools (agent calls them on demand)
@@ -70,7 +93,7 @@ Every failed path fails **open**: a sampling overrun degrades Bo5 → Bo-K →
 a normal answer, with a muted footer explaining what happened. Never a dead
 turn.
 
-## Verifier endpoint (your credentials)
+## Configuration
 
 Resolution order: plugin config → the `verifier` settings section →
 the dsh credentials seam (`credential:<name>` / provider env) →
