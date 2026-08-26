@@ -418,7 +418,7 @@ export async function* orchestrate(
       const firstFinished = collected.find((rollout): rollout is Rollout => rollout !== undefined)
       if (firstFinished === undefined) throw new Error('bo-n: every rollout failed')
       const footer = config.showFooter
-        ? `⚡ Best-of-N 未生效 · 采样 ${String(collected.length)} 路仅 ${String(usable.length)} 路可用 · 已按普通回答返回 · ${formatElapsed(Date.now() - startedAt)}`
+        ? `⚡ Best-of-N skipped · ${String(collected.length)} sampled, only ${String(usable.length)} usable · returned as a plain answer · ${formatElapsed(Date.now() - startedAt)}`
         : undefined
       yield* replayWithFooter(firstFinished.chunks, footer)
       return
@@ -463,9 +463,9 @@ export async function* orchestrate(
       const gap = winnerScore - runnerUpScore
       const verifierTokens = deps.backend.usage.snapshot().inputTokens + deps.backend.usage.snapshot().outputTokens
       const totalTokens = rolloutTokens(collected) + verifierTokens
-      const degradeTag = dropped > 0 ? ` · 采样 ${String(collected.length)} 路 ${String(dropped)} 路未完成` : ''
+      const degradeTag = dropped > 0 ? ` · ${String(collected.length)} sampled, ${String(dropped)} incomplete` : ''
       const footer = config.showFooter
-        ? `⚡ Best-of-N${degradeTag} · ${String(usable.length)} 选 1 → 候选 #${String(verifyResult.bestIndex)} · ${winnerScore.toFixed(1)}/20 · 高于亚军 ${gap.toFixed(2)} 分 · ${formatElapsed(Date.now() - startedAt)} · ${formatTokens(totalTokens)}`
+        ? `⚡ Best-of-N${degradeTag} · ${String(usable.length)}-choose-1 → candidate #${String(verifyResult.bestIndex)} · ${winnerScore.toFixed(1)}/20 · ${gap.toFixed(2)} pts above runner-up · ${formatElapsed(Date.now() - startedAt)} · ${formatTokens(totalTokens)}`
         : undefined
       yield* replayWithFooter(winner.chunks, footer)
       return
@@ -480,7 +480,7 @@ export async function* orchestrate(
     if (firstFinished === undefined) throw new Error('bo-n: turn failed with no fallback rollout')
     const shortReason = reason.replace(/^verifier:\s*/, '').split('—')[0]?.trim().slice(0, 80) ?? reason.slice(0, 80)
     const footer = config.showFooter
-      ? `⚡ Best-of-N 未生效 · ${shortReason} · 已按普通回答返回 · ${formatElapsed(Date.now() - startedAt)}`
+      ? `⚡ Best-of-N skipped · ${shortReason} · returned as a plain answer · ${formatElapsed(Date.now() - startedAt)}`
       : undefined
     yield* replayWithFooter(firstFinished.chunks, footer)
   }

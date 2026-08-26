@@ -61,16 +61,16 @@ window.__ModuleLoader__.load({
 
 		/** The three canned modes plus custom. */
 		const MODES = [
-			{ key: "off", label: "关闭", hint: "普通回答：1× 延迟与消耗；仅当会话选择 \u201cBo-N 模式\u201d preset 时按会话生效" },
-			{ key: "3", label: "快速经济 \u00b7 3 路采样", hint: "约 2–3× token、2× 延迟（约 7–15 秒/轮）；约 9 次模型调用" },
-			{ key: "5", label: "精准 \u00b7 5 路采样", hint: "约 3–5× token、2–4× 延迟（约 12–30 秒/轮）；约 16 次模型调用（论文默认 Bo5）" },
-			{ key: "custom", label: "自定义", hint: "2\u20138 路：消耗与耗时随路数增长（8 路约 6–8× token）" },
+			{ key: "off", label: "Off", hint: "Plain answer: 1× latency & cost; still applies per-session when a \u201cBo-N Mode\u201d preset is selected" },
+			{ key: "3", label: "Fast \u00b7 3-way", hint: "\u2248 2–3× tokens, 2× latency (\u2248 7–15 s/turn); \u2248 9 model calls" },
+			{ key: "5", label: "Accurate \u00b7 5-way", hint: "\u2248 3–5× tokens, 2–4× latency (\u2248 12–30 s/turn); \u2248 16 model calls (paper default Bo5)" },
+			{ key: "custom", label: "Custom", hint: "2–8 ways: cost & latency grow with the count (8 ways \u2248 6–8× tokens)" },
 		];
 
 		/** The preset-session tier (independent from the global tier). */
 		const PRESET_TIERS = [
-			{ key: "3", label: "快速经济 \u00b7 3 路", hint: "选中\u201cBo-N 模式\u201d的会话按 3 路采样" },
-			{ key: "5", label: "精准 \u00b7 5 路（默认）", hint: "论文默认 Bo5" },
+			{ key: "3", label: "Fast \u00b7 3-way", hint: "Sessions with the \u201cBo-N Mode\u201d preset sample 3 ways" },
+			{ key: "5", label: "Accurate \u00b7 5-way (default)", hint: "Paper default Bo5" },
 		];
 
 		function presetKeyOf(section) {
@@ -89,9 +89,9 @@ window.__ModuleLoader__.load({
 		/** The Best-of-N settings section (rendered by the settings shell). */
 		function BoNSettingsSection() {
 			return h("div", { className: "verifier-panel" },
-				h("h2", { className: "verifier-panel__title" }, "Best-of-N 对话模式"),
+				h("h2", { className: "verifier-panel__title" }, "Best-of-N Conversation Mode"),
 				h("p", { className: "verifier-panel__desc" },
-					"LLM-as-a-Verifier 择优（arXiv:2607.05391）：开启后每个回答在后台多路采样，由细粒度评审模型按对数概率期望分选出最佳答案，只把胜者呈现给你。")
+					"LLM-as-a-Verifier selection (arXiv:2607.05391): when enabled, every answer is sampled N ways in the background; a fine-grained verifier ranks them by log-probability expected score and only the winner is shown to you.")
 			);
 		}
 
@@ -148,10 +148,10 @@ window.__ModuleLoader__.load({
 			}, []);
 			const status = snapshot.status;
 			if (status === "loading") {
-				return h("p", { className: "verifier-panel__status" }, "正在读取设置…");
+				return h("p", { className: "verifier-panel__status" }, "Loading settings…");
 			}
 			if (status !== "ready" || snapshot.value === undefined) {
-				return h("p", { className: "verifier-panel__status" }, "设置暂不可用（此连接未暴露偏好设置）。");
+				return h("p", { className: "verifier-panel__status" }, "Settings unavailable (this connection does not expose preferences).");
 			}
 			const section = snapshot.value;
 			const activeKey = modeKeyOf(section);
@@ -241,7 +241,7 @@ window.__ModuleLoader__.load({
 			};
 
 			return h("div", { className: "verifier-panel" },
-				h("h3", { className: "verifier-panel__section-title" }, "一、全局 Best-of-N（所有会话）"),
+				h("h3", { className: "verifier-panel__section-title" }, "1. Global Best-of-N (all sessions)"),
 				h("div", { className: "verifier-panel__options" },
 					MODES.map((mode) => h("label", {
 						key: mode.key,
@@ -254,7 +254,7 @@ window.__ModuleLoader__.load({
 							h("span", { className: "verifier-panel__option-hint" }, mode.hint),
 							mode.key === "custom" && activeKey === "custom" || mode.key === "custom"
 								? h("span", { className: "verifier-panel__custom" },
-									"路数：",
+									"Ways: ",
 									h("input", {
 										type: "number", min: 2, max: 8, value: activeKey === "custom" ? String(section.boNCandidates ?? 5) : customDraft,
 										onChange: (event) => { setCustomDraft(event.target.value); },
@@ -265,7 +265,7 @@ window.__ModuleLoader__.load({
 						),
 					)),
 				),
-				h("h3", { className: "verifier-panel__section-title" }, "二、\u201cBo-N 模式\u201d会话档位（选中该 preset 的会话）"),
+				h("h3", { className: "verifier-panel__section-title" }, "2. \u201cBo-N Mode\u201d session tier (sessions with this preset)"),
 				h("div", { className: "verifier-panel__options" },
 					PRESET_TIERS.map((tier) => h("label", {
 						key: tier.key,
@@ -282,8 +282,8 @@ window.__ModuleLoader__.load({
 				h("label", { className: "verifier-panel__option", },
 					h("input", { type: "checkbox", checked: false, style: { display: "none" } }),
 					h("div", { className: "verifier-panel__option-body" },
-						h("span", { className: "verifier-panel__option-label" }, "评分超时（秒）"),
-						h("span", { className: "verifier-panel__option-hint" }, "评审阶段的独立时间预算（不被采样挤占）；超时该轮按普通回答返回并在 footer 说明。默认 90 秒。"),
+						h("span", { className: "verifier-panel__option-label" }, "Verify timeout (seconds)"),
+						h("span", { className: "verifier-panel__option-hint" }, "Independent wall-clock budget for the ranking phase (never borrowed by sampling); on timeout the turn returns a plain answer with a footer note. Default 90 s."),
 						h("span", { className: "verifier-panel__custom" },
 							h("input", {
 								type: "number", min: 30, max: 600, step: 10,
@@ -297,53 +297,53 @@ window.__ModuleLoader__.load({
 						),
 					),
 				),
-				h("h3", { className: "verifier-panel__section-title" }, "模型混合（候选多样性）"),
+				h("h3", { className: "verifier-panel__section-title" }, "Model mix (candidate diversity)"),
 				h("div", { className: "verifier-panel__mix" },
 					h("textarea", {
 						value: mixText,
-						placeholder: "每行一个。第一个 / 前是 provider，之后是 model：\n• provider/model（指定 provider）：\n  omni-message/opencode-go/minimax-m3\n  omni-chat/ollama-local/qwen3.8:27b\n• 不含 / 的 model id（用会话的 provider）：\n  deepseek-v4-pro",
+						placeholder: "One line per entry. The part before the first / is the provider, the rest is the model id:\n\u2022 provider/model (explicit provider):\n  omni-message/opencode-go/minimax-m3\n  omni-chat/ollama-local/qwen3.8:27b\n\u2022 a model id WITHOUT / (conversation's provider):\n  deepseek-v4-pro",
 						disabled: busy,
 						onChange: (event) => { setMixDraft(event.target.value); },
 					}),
 					h("div", { className: "verifier-panel__mix-actions" },
-						h("button", { className: "verifier-panel__mix-btn", disabled: busy, onClick: saveMix }, "保存混合模型"),
-						h("button", { className: "verifier-panel__mix-btn", disabled: busy, onClick: restoreDefaults }, "恢复配置默认"),
+						h("button", { className: "verifier-panel__mix-btn", disabled: busy, onClick: saveMix }, "Save model mix"),
+						h("button", { className: "verifier-panel__mix-btn", disabled: busy, onClick: restoreDefaults }, "Restore config defaults"),
 						h("span", { className: "verifier-panel__mix-hint" },
-							"第 0 个候选始终用当前会话模型（贪心锚点）；其余按此列表逐格分配，超出列表的格子回退为锚点模型的高温变体。留空 = 全部同模型采样。"),
+							"Candidate 0 is always the conversation's model (greedy anchor); the rest fill from this list in order, and slots beyond the list fall back to anchor-model variants. Empty = same-model sampling."),
 					),
 					(modelsError !== null
-						? h("p", { className: "verifier-panel__mix-hint" }, "可用模型不可用：" + modelsError)
+						? h("p", { className: "verifier-panel__mix-hint" }, "Available models unavailable: " + modelsError)
 						: availableModels !== null
 							? h("div", { className: "verifier-panel__mix" },
 								h("div", { className: "verifier-panel__mix-hint" },
-									"可用模型（点击追加到上方列表）——已选：" + String(mixLines.length) + " 个"),
+									"Available models (click to append above) \u2014 selected: " + String(mixLines.length)),
 								h("div", { className: "verifier-panel__mix-badges" },
 									availableModels.map((row) => h("button", {
 										key: row.provider + "/" + row.model,
 										type: "button",
 										className: "verifier-panel__mix-badge",
-										title: "provider: " + row.provider + "（点击以该 provider 加入混合）",
+										title: "provider: " + row.provider + " (click to add with this provider)",
 										onClick: () => appendModel(row),
 									}, row.provider + "/" + row.model)),
 								),
 							)
-							: h("p", { className: "verifier-panel__mix-hint" }, "正在读取可用模型…")
+							: h("p", { className: "verifier-panel__mix-hint" }, "Loading available models…")
 					),
 				),
 				h("div", { className: "verifier-panel__degrade" },
 					h("label", { className: "verifier-panel__option" + (section.autoDegrade !== false ? " verifier-panel__option--active" : ""), onClick: () => scope.set("autoDegrade", section.autoDegrade === false) },
 						h("input", { type: "checkbox", checked: section.autoDegrade !== false, onChange: () => scope.set("autoDegrade", section.autoDegrade === false), disabled: busy }),
 						h("div", { className: "verifier-panel__option-body" },
-							h("span", { className: "verifier-panel__option-label" }, "评分端点不支持时自动降级"),
+							h("span", { className: "verifier-panel__option-label" }, "Auto-degrade when the scoring endpoint lacks logprobs"),
 							h("span", { className: "verifier-panel__option-hint" },
-								"开启（默认）：评审端点无 logprobs（如 MiniMax 或部分网关路由）时自动切换采样评分，回答照常择优，footer 标注\u201c采样评分\u201d（精度略降）。"),
+								"On (default): when the verifier endpoint returns no logprobs (e.g. MiniMax or some gateway routes) it switches to sampling-based scoring; answers are still ranked and the footer marks \u201csampling scoring\u201d (slightly less precise)."),
 							h("span", { className: "verifier-panel__option-hint" },
-								"关闭：严格模式，不支持时不生效——Bo-N 轮次按普通回答返回并在 footer 说明原因，verify 工具直接报错反馈。"),
+								"Off: strict mode \u2014 when unsupported, Bo-N turns return as plain answers (footer explains why) and verify tools surface the error directly."),
 						),
 					),
 				),
 				h("p", { className: "verifier-panel__notice" },
-					"\u26a0 \u5f00\u542f\u540e\u5168\u5c40\u751f\u6548\uff1a\u6240\u6709\u4f1a\u8bdd\u7684\u6bcf\u4e2a\u56de\u7b54\u90fd\u4f1a\u591a\u8def\u91c7\u6837\u62e9\u4f18\uff0ctoken \u6d88\u8017\u4e0e\u8017\u65f6\u6309\u4e0a\u9762\u6863\u4f4d\u6807\u6ce8\u589e\u957f\uff1b\u4e0b\u4e00\u8f6e\u5bf9\u8bdd\u7acb\u5373\u751f\u6548\uff0c\u65e0\u9700\u91cd\u542f\u3002\u6bcf\u8f6e\u56de\u7b54\u5c3e\u90e8\u7684 footer \u4f1a\u663e\u793a\u5b9e\u9645\u8017\u65f6\u4e0e token \u6d88\u8017\u3002\u9000\u51fa\u65b9\u5f0f\uff1a\u968f\u65f6\u5207\u56de\u201c\u5173\u95ed\u201d\u3002"),
+					"\u26a0 Enabling applies globally: every answer in all sessions is sampled and ranked \u2014 token cost and latency grow per the tier above; takes effect on the very next turn, no restart. The per-turn footer shows the actual elapsed time and token use. To exit, switch back to \u201cOff\u201d anytime."),
 			);
 		}
 

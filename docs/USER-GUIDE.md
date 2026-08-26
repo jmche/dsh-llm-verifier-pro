@@ -1,116 +1,126 @@
-# dsh-llm-verifier-pro 用户指南
+# dsh-llm-verifier-pro User Guide
 
-本文档说明如何在 [DeepSeek Harness](https://github.com/deepseek-ai/dsh) 中安装、
-配置和使用本插件。如有疑问，请先阅读根目录 `README.md`。
+This document explains how to install, configure and use the plugin inside
+[DeepSeek Harness](https://github.com/deepseek-ai/dsh). For a quick overview
+read the root `README.md` first.
 
-## 安装
+## Installation
 
 ```bash
-# 方式一：从 npm 安装（发布后可用）
+# Option A: install from npm (after it is published)
 dsh plugin --profile web add dsh-llm-verifier-pro
 
-# 方式二：本地开发安装（file: / link: 依赖）
+# Option B: local development install (file: / link: dependency)
 dsh plugin --profile web add /path/to/dsh-llm-verifier-pro
 ```
 
-插件名（bundle 行 id）：`llm-verifier-pro`。
+Plugin id (bundle row id): `llm-verifier-pro`.
 
-## 配置
+## Configuration
 
-在 profile 的 `cordis.patch.yml` 中覆写 bundle 默认值：
+Override the bundle defaults in the profile's `cordis.patch.yml`:
 
 ```yaml
 # ~/.dsh/profiles/<profile>/cordis.patch.yml
 - id: llm-verifier-pro
   config:
-    # OpenAI-compatible verifier 端点（vLLM / SGLang / OpenAI / DeepSeek 均可用）
+    # OpenAI-compatible verifier endpoint (vLLM / SGLang / OpenAI / DeepSeek)
     baseUrl: https://your-gateway/v1
-    # 密钥：credential:<name>（dsh 凭据接缝）｜env:VAR｜明文
+    # Secret: credential:<name> (dsh credentials seam) | env:VAR | plain text
     apiKey: credential:YOUR_API_KEY_ENV
-    # 评分模型；留空时：显式配置 → settings 分区 → 会话模型（DeepSeek 路由）
-    # → deepseek-v4-flash，或非 DeepSeek 端点的 /models
+    # Scoring model; when empty, the resolution chain is: explicit config →
+    # settings section → conversation model (DeepSeek route) →
+    # deepseek-v4-flash, or /models on non-DeepSeek endpoints
     model: opencode-go/deepseek-v4-flash
-    timeoutMs: 60000        # 单次 verifier 请求超时
-    maxConcurrency: 8       # 并发 verifier 调用上限（工具 + Bo-N 共享）
-    deepseek: false         # 强制 DeepSeek 调用路径（thinking + 大输出预算）
-    prefill: true           # 非 DeepSeek 服务器上启用 vLLM/SGLang 标签 prefill
-    # 三个工具的开关
+    timeoutMs: 60000        # Per-call verifier request timeout
+    maxConcurrency: 8       # Concurrent verifier calls (tools + Bo-N shared)
+    deepseek: false         # Force the DeepSeek call path (thinking + large output budget)
+    prefill: true           # Enable vLLM/SGLang tag prefill on non-DeepSeek servers
+    # Switches for the three tools
     compare: true
     select: true
     track: true
-    # ── Best-of-N 对话模式 ──
-    boN: false              # 部署级默认开关（也可用 Web 面板/会话 preset 开启）
-    boNCandidates: 5        # 每轮采样候选数
-    boNPresetIds: ['bo-n']  # 命中即开启模式的会话 preset id 列表
+    # ── Best-of-N conversation mode ──
+    boN: false              # Deployment-level default switch (Web panel / session preset can enable)
+    boNCandidates: 5        # Candidates sampled per assistant turn
+    boNPresetIds: ['bo-n']  # Session presets that opt the session into the mode
     samplingTemperature: 0.7
-    timeoutMsBoN: 120000        # 采样阶段预算（与验证阶段独立）
-    verifyTimeoutMsBoN: 90000   # 验证阶段预算
+    timeoutMsBoN: 120000        # Sampling-phase budget (independent of the verify phase)
+    verifyTimeoutMsBoN: 90000   # Verify-phase budget
     showFooter: true
 ```
 
-## 三个使用面
+## The three usage surfaces
 
-### 1. 工具（agent 按需调用）
+### 1. Tools (agent calls on demand)
 
-| 工具 | 作用 |
+| Tool | What it does |
 |---|---|
-| `verify_compare` | 在给定准则下对两个候选做单次方向性比较，返回细粒度奖励 (R_A, R_B) ∈ [0,1] |
-| `verify_select` | 概率枢轴锦标赛（PPT）从 N 个候选中选最优：O(Nk) 次比较而非 O(N²)，seed 可复现 |
-| `verify_track` | 对轨迹的每个 checkpoint 打分：A(0%)…T(100%) 的 20 进制进度曲线 |
+| `verify_compare` | Single directional comparison of two candidates under a criterion; returns fine-grained rewards (R_A, R_B) ∈ [0,1] |
+| `verify_select` | Probabilistic Pivot Tournament (PPT): picks the best of N candidates in O(Nk) comparisons instead of O(N²); seed is reproducible |
+| `verify_track` | Scores each checkpoint of a trajectory: A(0%)…T(100%) 20-letter progress curve |
 
-### 2. 服务（面向代码）
+### 2. Service (for code)
 
 ```ts
 import { Context } from '@deepseek-ai/cordis'
-// 在插件上下文中：
-ctx.verifierPro.verify({ task, candidates, criteria })   // 排序
+// inside a plugin context:
+ctx.verifierPro.verify({ task, candidates, criteria })   // rank
 ctx.verifierPro.compare(problem, traceA, traceB, criteria)
 ctx.verifierPro.select(problem, candidates, criteria)
 ctx.verifierPro.track(problem, steps)
 ```
 
-### 3. 模式（Best-of-N 对话模式）
+### 3. Mode (Best-of-N conversation mode)
 
-开启后，会话中**每个助手回合**被采样 N 路，仅把胜者回放给你。三态门控：
+When enabled, **every assistant turn** of the session is sampled N ways and
+only the winner is replayed to you. Three-state gating:
 
-| 层级 | 开关 |
+| Layer | Switch |
 |---|---|
-| Settings 全局（Web UI 面板） | `verifier-pro.boN: true` |
-| 会话 preset | 会话 `agentPreset` ∈ `boNPresetIds`（默认 `['bo-n']`） |
-| 配置默认 | `config.boN: true` |
+| Settings global (Web UI panel) | `verifier-pro.boN: true` |
+| Session preset | session `agentPreset` ∈ `boNPresetIds` (default `['bo-n']`) |
+| Config default | `config.boN: true` |
 
-所有失败路径均**fail-open**：采样超时降级 Bo-N → Bo-K → 普通回答，并在回答下方附加说明 footer，绝不产出死回合。
+Every failure path fails **open**: a sampling overrun degrades Bo-N → Bo-K →
+a normal answer, with an explanatory footer under the answer. Never a dead
+turn.
 
-## 端点解析顺序（零配置继承）
+## Endpoint resolution order (zero-config inheritance)
 
 ```
-显式配置(config) → settings 分区(verifier-pro) → 凭据接缝(credential:<name>/提供方 key 环境)
-→ OPENAI_BASE_URL / OPENAI_API_KEY → DEEPSEEK_API_KEY（暗示 api.deepseek.com）
+explicit config (config) → settings section (verifier-pro) → credentials seam
+(credential:<name> / provider key env) → OPENAI_BASE_URL / OPENAI_API_KEY →
+DEEPSEEK_API_KEY (implies api.deepseek.com)
 ```
 
-## Web 设置面板
+## Web settings panel
 
-插件附带浏览器端设置面板（`src/client.js`），注册为 settings 分区
-`verifier-pro`（slot id `verifier-pro`，标题 “Best-of-N”）。可用于：
-- 全局开关 Best-of-N
-- 全局候选数
-- 会话 preset 候选数
-- 验证阶段超时
-- 额外评分准则
+The plugin ships a browser-side settings panel (`src/client.js`) registered as
+the `verifier-pro` settings section (slot id `verifier-pro`, title
+"Best-of-N"). It can control:
+- the global Best-of-N switch
+- the global candidate count
+- the session-preset candidate count
+- the verify-phase timeout
+- extra grading criteria
+- the candidate model mix (`provider/model` lines; the first `/` splits the
+  provider from the model id — a model id containing `/` must include its real
+  provider, only a `/`-free id can ride the conversation's provider)
 
-## 开发
+## Development
 
 ```bash
 npm install
-npm run check      # typecheck + 全部测试（80 个）
-npm run build      # tsc + 复制 client.js 到 lib/
+npm run check      # typecheck + full test suite
+npm run build      # tsc + copy client.js into lib/
 ```
 
-## 许可证
+## License
 
-MIT。实现移植自两个上游（均为 MIT）：
+MIT. The implementation is ported from two upstream projects (both MIT):
 
-- [dsh-llm-as-a-verifier](https://github.com/TaurenMountain/dsh-llm-as-a-verifier)（TaurenMountain）
-- [llm-as-a-Verifier-dsh](https://github.com/aispin-dev/llm-as-a-Verifier-dsh)（Aispin）
+- [dsh-llm-as-a-verifier](https://github.com/TaurenMountain/dsh-llm-as-a-verifier) (TaurenMountain)
+- [llm-as-a-Verifier-dsh](https://github.com/aispin-dev/llm-as-a-Verifier-dsh) (Aispin)
 
-方法来源：LLM-as-a-Verifier（arXiv:2607.05391）。
+Method: LLM-as-a-Verifier (arXiv:2607.05391).
