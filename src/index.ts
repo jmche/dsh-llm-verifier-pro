@@ -106,6 +106,14 @@ export interface Config {
   boNPivots?: number
   /** PPT ring seed (default 0: fixed, reproducible). */
   boNSeed?: number
+  /**
+   * Model mix for Bo-N candidates beyond the greedy anchor. Candidate 0 is
+   * always the conversation's own model; each later slot takes a
+   * `{ provider, model }` entry from this list in order, and slots beyond the
+   * list fall back to the anchor model. Configurable in the Web settings panel
+   * (verifier-pro section) too.
+   */
+  boNModelMix?: Array<{ provider: string; model: string }>
 }
 
 export const Config: z<Config> = z.object({
@@ -130,6 +138,7 @@ export const Config: z<Config> = z.object({
   criteria: z.array(z.string()).default([]),
   boNPivots: z.number().default(2),
   boNSeed: z.number().default(0),
+  boNModelMix: z.array(z.object({ provider: z.string(), model: z.string() })).default([]),
 })
 
 /** The settings section shape this plugin reads (and the Web UI panel writes). */
@@ -147,6 +156,8 @@ export interface VerifierSettingsSection {
   verifyTimeoutMs?: number
   /** Extra grading criteria for Bo-N comparison prompts. */
   criteria?: string[]
+  /** Best-of-N model mix (provider/model pairs for non-anchor candidates). */
+  boNModelMix?: Array<{ provider: string; model: string }>
 }
 
 /** The settings section schema. boN/boNCandidates carry NO schema default: a default would masquerade as user-set and override the plugin-config row. */
@@ -159,6 +170,7 @@ const SettingsSectionSchema = z.object({
   boNPresetCandidates: z.number(),
   verifyTimeoutMs: z.number(),
   criteria: z.array(z.string()),
+  boNModelMix: z.array(z.object({ provider: z.string(), model: z.string() })).default([]),
 })
 
 /** A hot reader of the resolved settings section (re-read per call/turn). */
@@ -649,6 +661,8 @@ export function apply(ctx: Context, config: Config): void {
       const boNConfig: BoNConfig = {
         nCandidates: decision.nCandidates,
         samplingTemperature: cfg.samplingTemperature ?? 0.7,
+        // Web panel wins over plugin config for the mix (hot re-read per turn).
+        mixModels: (sectionReader().boNModelMix?.length ? sectionReader().boNModelMix : cfg.boNModelMix) as BoNConfig['mixModels'],
         timeoutMs: cfg.timeoutMsBoN ?? 120_000,
         verifyTimeoutMs: sectionReader().verifyTimeoutMs ?? cfg.verifyTimeoutMsBoN ?? 90_000,
         showFooter: cfg.showFooter ?? true,

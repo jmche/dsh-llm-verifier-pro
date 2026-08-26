@@ -31,6 +31,15 @@ export interface BoNConfig {
   /** Sampling temperature for the diversity rollouts. */
   readonly samplingTemperature: number
   /**
+   * Model mix for the non-anchor candidates. The FIRST candidate (index 0)
+   * always rides the conversation's own model — the greedy anchor. Each
+   * remaining slot is drawn, in order, from this list; entries beyond the
+   * slot count are ignored, and slots beyond the list fall back to the
+   * anchor model at the sampling temperature. A `<provider>/<model>` pair
+   * override wins over the conversation's provider/model for that candidate.
+   */
+  readonly mixModels?: readonly { provider: string; model: string }[]
+  /**
    * Wall-clock budget for the sampling phase (rollouts + verdict). Past it the
    * turn degrades to a normal answer. NOTE: the verify phase carries its own
    * INDEPENDENT budget (verifyTimeoutMs) — long answers must not starve the
@@ -341,8 +350,21 @@ export async function* orchestrate(
   next: () => AsyncIterable<StreamChunk>,
 ): AsyncGenerator<StreamChunk> {
   // The diversity rollouts: same request, raised temperature, reentry-guarded.
+  // Candidate 0 is the greedy anchor (next() — the conversation's own model);
+  // each later slot draws from config.mixModels when configured, else falls
+  // back to the anchor model at the sampling temperature.
   const extra = Math.max(0, config.nCandidates - 1)
-  const sampled = Array.from({ length: extra }, () => {
+  const mixed = config.mixModels ?? []
+  const sampled = Array.from({ length: extra }, (_slot, i) => {
+    const mix = mixed[i]
+    if (mix && mix.model) {
+      // provider empty → inherit the conversation's provider; model always wins.
+      const request: GenerateOptions = mix.provider
+        ? { ...options, temperature: config.samplingTemperature, provider: mix.provider, model: mix.model }
+        : { ...options, temperature: config.samplingTemperature, model: mix.model }
+      markInternalRequest(request)
+      return request
+    }
     const request: GenerateOptions = { ...options, temperature: config.samplingTemperature }
     markInternalRequest(request)
     return request

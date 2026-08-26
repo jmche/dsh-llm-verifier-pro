@@ -38,6 +38,14 @@ window.__ModuleLoader__.load({
 .verifier-panel__degrade>label{cursor:pointer}
 .verifier-panel__section-title{font-size:13px;font-weight:600;margin:8px 0 0;color:var(--dsw-alias-text-primary,#111827)}
 .verifier-panel__status{font-size:12px;color:var(--dsw-alias-text-secondary,#6b7280);margin:0}
+.verifier-panel__mix{display:flex;flex-direction:column;gap:8px;margin-top:2px}
+.verifier-panel__mix textarea{width:100%;min-height:88px;padding:8px 10px;border:1px solid var(--dsw-alias-border-default,#e5e7eb);border-radius:8px;font-size:12.5px;line-height:1.6;background:var(--dsw-alias-bg-canvas,#fff);color:var(--dsw-alias-text-primary,#111827);resize:vertical;box-sizing:border-box;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.verifier-panel__mix textarea:focus{outline:none;border-color:var(--dsw-alias-accent-primary,#2563eb)}
+.verifier-panel__mix-actions{display:flex;align-items:center;gap:10px}
+.verifier-panel__mix-btn{padding:5px 14px;border:1px solid var(--dsw-alias-border-default,#e5e7eb);border-radius:6px;background:var(--dsw-alias-bg-canvas,#fff);color:var(--dsw-alias-text-primary,#111827);font-size:12.5px;cursor:pointer;transition:border-color .15s}
+.verifier-panel__mix-btn:hover{border-color:var(--dsw-alias-accent-primary,#2563eb)}
+.verifier-panel__mix-btn:disabled{opacity:.5;cursor:not-allowed}
+.verifier-panel__mix-hint{font-size:11.5px;color:var(--dsw-alias-text-secondary,#6b7280);line-height:1.5}
 `;
 		const CSS_TAG = "dsh-llm-verifier-pro/client/panel.css";
 		if (typeof document !== "undefined" && document.querySelector(`style[data-plugin-css="${CSS_TAG}"]`) === null) {
@@ -93,6 +101,7 @@ window.__ModuleLoader__.load({
 			);
 			const [customDraft, setCustomDraft] = useState("5");
 			const [verifyDraft, setVerifyDraft] = useState("90");
+			const [mixDraft, setMixDraft] = useState(null);
 			const status = snapshot.status;
 			if (status === "loading") {
 				return h("p", { className: "verifier-panel__status" }, "正在读取设置…");
@@ -118,6 +127,37 @@ window.__ModuleLoader__.load({
 
 			const pickPreset = (key) => {
 				scope.set("boNPresetCandidates", Number.parseInt(key, 10));
+			};
+
+			// Model mix: lines of "<provider>/<model>" (or bare model id on the
+			// conversation's provider). The panel holds a text draft that lazily
+			// reflects the stored section; saving parses + writes it.
+			const mixLines = Array.isArray(section.boNModelMix) && section.boNModelMix.length > 0
+				? section.boNModelMix.map((entry) => entry.provider && entry.model ? entry.provider + "/" + entry.model : "")
+				: [];
+			const mixText = mixDraft !== null ? mixDraft : mixLines.join("\n");
+			const normalizeMix = (text) => {
+				const entries = [];
+				for (const raw of (text ?? "").split("\n")) {
+					const line = raw.trim();
+					if (line === "") continue;
+					const slash = line.indexOf("/");
+					if (slash >= 0) {
+						const provider = line.slice(0, slash).trim();
+						const model = line.slice(slash + 1).trim();
+						if (provider && model) entries.push({ provider, model });
+					} else if (line.length > 0) {
+						// Bare id: keep the conversation's provider by leaving it
+						// unset and letting the host fill the default provider.
+						entries.push({ provider: "", model: line });
+					}
+				}
+				return entries;
+			};
+			const saveMix = () => {
+				const entries = normalizeMix(mixText);
+				scope.set("boNModelMix", entries);
+				setMixDraft(null); // re-sync from the stored section
 			};
 
 			return h("div", { className: "verifier-panel" },
@@ -175,6 +215,20 @@ window.__ModuleLoader__.load({
 								},
 							}),
 						),
+					),
+				),
+				h("h3", { className: "verifier-panel__section-title" }, "模型混合（候选多样性）"),
+				h("div", { className: "verifier-panel__mix" },
+					h("textarea", {
+						value: mixText,
+						placeholder: "provider/model，每行一个：\nollama-local/qwen3.8:27b\nagnes/agnes-2.5-flash\nollama-local/ornith-1.5:35b",
+						disabled: busy,
+						onChange: (event) => { setMixDraft(event.target.value); },
+					}),
+					h("div", { className: "verifier-panel__mix-actions" },
+						h("button", { className: "verifier-panel__mix-btn", disabled: busy, onClick: saveMix }, "保存混合模型"),
+						h("span", { className: "verifier-panel__mix-hint" },
+							"第 0 个候选始终用当前会话模型（贪心锚点）；其余按此列表逐格分配，超出列表的格子回退为锚点模型的高温变体。留空 = 全部同模型采样。"),
 					),
 				),
 				h("div", { className: "verifier-panel__degrade" },

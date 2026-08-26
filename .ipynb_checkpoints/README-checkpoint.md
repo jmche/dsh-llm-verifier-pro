@@ -40,22 +40,6 @@ the winning response is replayed to you. Three-state gating:
 | Session preset | `agentPreset` ∈ `boNPresetIds` (default `['bo-n']`) |
 | Config default | `boN: true` in the plugin config |
 
-**Model mix (candidate diversity).** Candidate 0 always rides the
-conversation's own model (the greedy anchor). Each later slot draws a
-`{ provider, model }` entry from `boNModelMix` in order; slots beyond the list
-fall back to anchor-model variants at the sampling temperature. Configure it in
-the patch layer, or live from the Web settings panel (the `verifier-pro`
-section has a dedicated editor — one `provider/model` per line; a bare model
-id inherits the conversation's provider).
-
-```yaml
-boNModelMix:
-  - provider: ollama-local
-    model: qwen3.8:27b
-  - provider: agnes
-    model: agnes-2.5-flash
-```
-
 Every failed path fails **open**: a sampling overrun degrades Bo5 → Bo-K →
 a normal answer, with a muted footer explaining what happened. Never a dead
 turn.
