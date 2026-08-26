@@ -97,7 +97,7 @@ window.__ModuleLoader__.load({
 
 		// The panel body needs the settingsScope service, which arrives through
 		// the plugin context — composed below in apply().
-		function BoNPanelBody({ scope }) {
+		function BoNPanelBody({ scope, connection }) {
 			const snapshot = useSyncExternalStore(
 				(subscribe) => scope.subscribe(subscribe),
 				() => scope.getSnapshot(),
@@ -105,21 +105,41 @@ window.__ModuleLoader__.load({
 			const [customDraft, setCustomDraft] = useState("5");
 			const [verifyDraft, setVerifyDraft] = useState("90");
 			const [mixDraft, setMixDraft] = useState(null);
-			// Available models from the host half (ctx.llm.listProviders()),
-			// for the mix picker. Loading is best-effort: no host, or an error,
-			// leaves the picker empty but never breaks the panel.
-			// NOTE: declared BEFORE any conditional return — React hooks must run
-			// unconditionally, and `knownProviders` below reads `availableModels`.
+			// Available models for the mix picker (best-effort enrichment for
+			// the badge list — the provider recognition below does NOT depend
+			// on it: saving is an explicit split). Source: the connection's
+			// `llm.providers` unary, which works for BOTH bundle and dynamic
+			// loading (the official models panel uses it).
+			// NOTE: declared BEFORE any conditional return — React hooks must
+			// run unconditionally.
 			const [availableModels, setAvailableModels] = useState(null);
 			const [modelsError, setModelsError] = useState(null);
 			useEffect(() => {
 				let cancelled = false;
 				try {
+					if (connection && connection.api && typeof connection.api.llm.providers === "function") {
+						connection.api.llm.providers({}).then((resp) => {
+							if (cancelled) return;
+							const value = resp && resp.result && resp.result.ok !== false ? resp.result.value : (resp && resp.value);
+							const providers = value && Array.isArray(value.providers)
+								? value.providers.map((p) => p && p.provider).filter((p) => typeof p === "string" && p.length > 0)
+								: [];
+							// llm.providers gives route NAMES only; the badge list
+							// would need models too. Mark the source as loaded so
+							// the panel doesn't show a permanently "loading" hint.
+							if (providers.length > 0) setAvailableModels([]);
+						}).catch(() => {});
+					}
+				} catch (error) { /* ignore */ }
+				// Fallback enrichment: host RPC (harness only).
+				try {
 					host.call("verifier-pro.available-models").then((rows) => {
 						if (cancelled) return;
-						if (rows && Array.isArray(rows) && rows.length > 0) setAvailableModels(rows);
-						else if (rows && rows.error) setModelsError(String(rows.error));
-						else setModelsError("host 未返回可用模型（无 provider 路由）。");
+						if (rows && Array.isArray(rows) && rows.length > 0) {
+							setAvailableModels(rows);
+						} else if (rows && rows.error) {
+							setModelsError(String(rows.error));
+						}
 					}).catch((error) => { if (!cancelled) setModelsError(String(error && error.message || error)); });
 				} catch (error) {
 					if (!cancelled) setModelsError(String(error && error.message || error));
@@ -156,15 +176,12 @@ window.__ModuleLoader__.load({
 			// Model mix editor. Each line is either:
 			//   - `model` (a FULL model id, e.g. `ollama-local/qwen3.8:27b`) —
 			//     sampled with the conversation's provider; or
-			//   - `knownProvider/model` — an explicit provider route (only when
-			//     the part before `/` is a REAL provider from the host's list),
-			//     e.g. `omni-message/opencode-go/minimax-m3`.
+			//   - `provider/model` — an explicit provider route, e.g.
+			//     `omni-message/opencode-go/minimax-m3`.
+			// The first `/` splits provider (left) from model id (right); a line
+			// without `/` is a full model id on the conversation's provider.
 			// The panel holds a text draft that lazily reflects the stored
 			// section; saving parses + writes it.
-			const knownProviders = Array.isArray(availableModels)
-				? [...new Set(availableModels.map((row) => row.provider))]
-				: [];
-			const knownProviderSet = new Set(knownProviders);
 			const mixLines = Array.isArray(section.boNModelMix) && section.boNModelMix.length > 0
 				? section.boNModelMix.map((entry) => {
 					if (typeof entry === "string") return entry;
@@ -184,10 +201,11 @@ window.__ModuleLoader__.load({
 					if (line === "") continue;
 					const firstSlash = line.indexOf("/");
 					if (firstSlash > 0) {
-						const head = line.slice(0, firstSlash);
-						if (knownProviderSet.has(head)) {
-							// Explicit provider route: knownProvider/model-id...
-							entries.push({ provider: head, model: line.slice(firstSlash + 1).trim() });
+						const provider = line.slice(0, firstSlash).trim();
+						const model = line.slice(firstSlash + 1).trim();
+						// Explicit provider route: provider/model-id...
+						if (provider.length > 0 && model.length > 0) {
+							entries.push({ provider, model });
 							continue;
 						}
 					}
@@ -325,7 +343,7 @@ window.__ModuleLoader__.load({
 			);
 		}
 
-		const inject = ["slots", "settingsScope"];
+		const inject = ["slots", "settingsScope", "connection"];
 
 		/**
 		 * Register the settings section bound to the Host's `verifier` namespace.
@@ -334,6 +352,11 @@ window.__ModuleLoader__.load({
 		function apply(ctx) {
 			ctx.slots.inject("settings.section", () => {
 				const scope = ctx.settingsScope.bind({ namespace: "verifier-pro" });
+				// The connection service (declared in inject) fronts the unary
+				// RPCs — llm.providers is how we learn the real provider routes
+				// under BOTH loading modes (the harness RPC is dynamic-only).
+				let connection;
+				try { connection = ctx.get("connection"); } catch { connection = undefined; }
 				return ctx.slots.register({
 					name: "settings.section",
 					id: "verifier-pro",
@@ -344,7 +367,7 @@ window.__ModuleLoader__.load({
 						h("h2", { className: "verifier-panel__title" }, "Best-of-N \u5bf9\u8bdd\u6a21\u5f0f"),
 						h("p", { className: "verifier-panel__desc" },
 							"LLM-as-a-Verifier \u62e9\u4f18\uff08arXiv:2607.05391\uff09\uff1a\u5f00\u542f\u540e\u6bcf\u4e2a\u56de\u7b54\u5728\u540e\u53f0\u591a\u8def\u91c7\u6837\uff0c\u7531\u7ec6\u7c92\u5ea6\u8bc4\u5ba1\u6a21\u578b\u6309\u5bf9\u6570\u6982\u7387\u671f\u671b\u5206\u9009\u51fa\u6700\u4f73\u7b54\u6848\uff0c\u53ea\u628a\u80dc\u8005\u5448\u73b0\u7ed9\u4f60\u3002"),
-						h(BoNPanelBody, { scope }),
+						h(BoNPanelBody, { scope, connection }),
 					);
 				});
 			});

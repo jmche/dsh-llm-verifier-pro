@@ -45,15 +45,22 @@ conversation's own model (the greedy anchor). Each later slot draws a
 `{ provider, model }` entry from `boNModelMix` in order; slots beyond the list
 fall back to anchor-model variants at the sampling temperature. Configure it in
 the patch layer, or live from the Web settings panel (the `verifier-pro`
-section has a dedicated editor — one `provider/model` per line; a bare model
-id inherits the conversation's provider).
+section has a dedicated editor — one `provider/model` per line; a line without
+`/` is a full model id on the conversation's provider).
+
+`provider` is a REAL dsh provider route (`omni-chat`, `omni-message`,
+`deepseek-official`…); `model` is the FULL model id exactly as that provider
+advertises it (possibly containing its own `/`, e.g. `agnes/agnes-2.5-flash`).
+The panel splits each line at its FIRST `/`.
 
 ```yaml
 boNModelMix:
-  - provider: ollama-local
-    model: qwen3.8:27b
-  - provider: agnes
-    model: agnes-2.5-flash
+  - provider: omni-chat
+    model: agnes/agnes-2.5-flash
+  - provider: omni-message
+    model: opencode-go/minimax-m3
+  - provider: omni-chat
+    model: ollama-local/qwen3.8:27b
 ```
 
 Every failed path fails **open**: a sampling overrun degrades Bo5 → Bo-K →
