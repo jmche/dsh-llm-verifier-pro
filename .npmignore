@@ -3,3 +3,4 @@ tests/
 refs/
 .coverage/
 *.tsbuildinfo
+.ipynb_checkpoints/

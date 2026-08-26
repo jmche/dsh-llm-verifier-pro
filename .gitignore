@@ -3,3 +3,6 @@ lib/
 *.tsbuildinfo
 .coverage/
 refs/
+
+# Editor/jupyter checkpoints
+.ipynb_checkpoints/
