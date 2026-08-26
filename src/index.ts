@@ -108,12 +108,13 @@ export interface Config {
   boNSeed?: number
   /**
    * Model mix for Bo-N candidates beyond the greedy anchor. Candidate 0 is
-   * always the conversation's own model; each later slot takes a
-   * `{ provider, model }` entry from this list in order, and slots beyond the
-   * list fall back to the anchor model. Configurable in the Web settings panel
-   * (verifier-pro section) too.
+   * always the conversation's own model; each later slot takes one FULL model
+   * id from this list in order (e.g. `ollama-local/qwen3.8:27b`), and slots
+   * beyond the list fall back to the anchor model. The conversation's
+   * provider stays untouched; only the model id is overridden. Configurable
+   * in the Web settings panel (verifier-pro section) too.
    */
-  boNModelMix?: Array<{ provider: string; model: string }>
+  boNModelMix?: string[]
 }
 
 export const Config: z<Config> = z.object({
@@ -138,7 +139,7 @@ export const Config: z<Config> = z.object({
   criteria: z.array(z.string()).default([]),
   boNPivots: z.number().default(2),
   boNSeed: z.number().default(0),
-  boNModelMix: z.array(z.object({ provider: z.string(), model: z.string() })).default([]),
+  boNModelMix: z.array(z.string()).default([]),
 })
 
 /** The settings section shape this plugin reads (and the Web UI panel writes). */
@@ -156,8 +157,8 @@ export interface VerifierSettingsSection {
   verifyTimeoutMs?: number
   /** Extra grading criteria for Bo-N comparison prompts. */
   criteria?: string[]
-  /** Best-of-N model mix (provider/model pairs for non-anchor candidates). */
-  boNModelMix?: Array<{ provider: string; model: string }>
+  /** Best-of-N model mix (full model ids for non-anchor candidates). */
+  boNModelMix?: string[]
 }
 
 /** The settings section schema. boN/boNCandidates carry NO schema default: a default would masquerade as user-set and override the plugin-config row. */
@@ -170,7 +171,7 @@ const SettingsSectionSchema = z.object({
   boNPresetCandidates: z.number(),
   verifyTimeoutMs: z.number(),
   criteria: z.array(z.string()),
-  boNModelMix: z.array(z.object({ provider: z.string(), model: z.string() })).default([]),
+  boNModelMix: z.array(z.string()).default([]),
 })
 
 /** A hot reader of the resolved settings section (re-read per call/turn). */
@@ -184,10 +185,31 @@ export type SettingsSectionReader = () => VerifierSettingsSection
 export function sectionReaderOf(ctx: Context, config: Config): SettingsSectionReader {
   let scope: { get(): unknown } | undefined
   const register = (host: unknown): void => {
-    const settings = (host as { settings?: { register(ns: unknown, schema: unknown): unknown } }).settings
+    const settings = (host as { settings?: { register(ns: unknown, schema: unknown, options?: { base?: unknown }): unknown } }).settings
     if (settings === undefined) return
     try {
-      scope = settings.register(settingsNamespace(config.settingsNs ?? 'verifier-pro'), SettingsSectionSchema) as unknown as { get(): unknown }
+      // The plugin config acts as the composition BASE for the settings
+      // section: the Web panel shows config-layered defaults (model mix,
+      // candidates, verify budget, criteria, endpoint) and only what the user
+      // changed in the panel overrides them. Empty primitives stay empty so a
+      // missing value reads as "unconfigured", never as a wrong default.
+      const base: Record<string, unknown> = {}
+      // Plugin-config keys → settings-section keys (they differ: baseUrl →
+      // baseURL, verifyTimeoutMsBoN → verifyTimeoutMs).
+      const forward: Record<string, keyof Config> = {
+        baseURL: 'baseUrl',
+        apiKey: 'apiKey',
+        model: 'model',
+        boN: 'boN',
+        boNCandidates: 'boNCandidates',
+        verifyTimeoutMs: 'verifyTimeoutMsBoN',
+        criteria: 'criteria',
+        boNModelMix: 'boNModelMix',
+      }
+      for (const [sectionKey, configKey] of Object.entries(forward)) {
+        if (config[configKey] !== undefined) base[sectionKey] = config[configKey]
+      }
+      scope = settings.register(settingsNamespace(config.settingsNs ?? 'verifier-pro'), SettingsSectionSchema, { base }) as unknown as { get(): unknown }
     } catch (error) {
       // Duplicate registration (or a schema conflict) — degrade to explicit config.
       console.error(`[verifier-pro] settings namespace registration failed (${error instanceof Error ? error.message : String(error)}); falling back to explicit config only`)
@@ -632,6 +654,31 @@ export function apply(ctx: Context, config: Config): void {
         runnerUpScore: summary.runnerUpScore,
         reason: summary.reason,
       }))
+    })
+    // Available models for the Bo-N mix picker. `ctx.llm.listProviders()`
+    // yields `{ id, name }` route entries; each route's advisory catalog comes
+    // from `await ctx.llm.listModels(providerId)` as `{ provider, id, name }`
+    // rows. Returns `{ provider, model }` rows sorted by provider then model —
+    // exactly what the mix list consumes.
+    harness.handle('verifier-pro.available-models', async () => {
+      try {
+        const rows: Array<{ provider: string; model: string }> = []
+        for (const { id: provider } of ctx.llm.listProviders()) {
+          let models: readonly { id: string }[]
+          try {
+            models = await ctx.llm.listModels(provider)
+          } catch {
+            // A provider whose catalog is unavailable is simply omitted; the
+            // catalog is advisory and never a request-routing gate.
+            continue
+          }
+          for (const { id: model } of models) if (model) rows.push({ provider, model })
+        }
+        rows.sort((a, b) => a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model))
+        return rows
+      } catch (error) {
+        return { error: error instanceof Error ? error.message : String(error) }
+      }
     })
   }
 

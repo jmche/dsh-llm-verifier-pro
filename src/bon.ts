@@ -35,10 +35,14 @@ export interface BoNConfig {
    * always rides the conversation's own model — the greedy anchor. Each
    * remaining slot is drawn, in order, from this list; entries beyond the
    * slot count are ignored, and slots beyond the list fall back to the
-   * anchor model at the sampling temperature. A `<provider>/<model>` pair
-   * override wins over the conversation's provider/model for that candidate.
+   * anchor model at the sampling temperature.
+   *
+   * Entries are FULL model ids exactly as the dsh provider advertises them
+   * (e.g. `ollama-local/qwen3.8:27b`, `agnes/agnes-2.5-flash`) — NOT bare
+   * names and NOT provider/model pairs. The conversation's provider is kept
+   * for every rollout; only the model id is overridden.
    */
-  readonly mixModels?: readonly { provider: string; model: string }[]
+  readonly mixModels?: readonly string[]
   /**
    * Wall-clock budget for the sampling phase (rollouts + verdict). Past it the
    * turn degrades to a normal answer. NOTE: the verify phase carries its own
@@ -356,16 +360,11 @@ export async function* orchestrate(
   const extra = Math.max(0, config.nCandidates - 1)
   const mixed = config.mixModels ?? []
   const sampled = Array.from({ length: extra }, (_slot, i) => {
-    const mix = mixed[i]
-    if (mix && mix.model) {
-      // provider empty → inherit the conversation's provider; model always wins.
-      const request: GenerateOptions = mix.provider
-        ? { ...options, temperature: config.samplingTemperature, provider: mix.provider, model: mix.model }
-        : { ...options, temperature: config.samplingTemperature, model: mix.model }
-      markInternalRequest(request)
-      return request
-    }
-    const request: GenerateOptions = { ...options, temperature: config.samplingTemperature }
+    const modelId = mixed[i]
+    // Full model-id override; the conversation's provider stays untouched.
+    const request: GenerateOptions = modelId && modelId.length > 0
+      ? { ...options, temperature: config.samplingTemperature, model: modelId }
+      : { ...options, temperature: config.samplingTemperature }
     markInternalRequest(request)
     return request
   })

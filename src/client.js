@@ -16,7 +16,7 @@ window.__ModuleLoader__.load({
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 		const react = require("react");
 
-		const { createElement: h, useSyncExternalStore, useState } = react;
+		const { createElement: h, useSyncExternalStore, useState, useEffect } = react;
 
 		/** The section's shared styles (one injected style tag). */
 		const CSS = `
@@ -46,6 +46,9 @@ window.__ModuleLoader__.load({
 .verifier-panel__mix-btn:hover{border-color:var(--dsw-alias-accent-primary,#2563eb)}
 .verifier-panel__mix-btn:disabled{opacity:.5;cursor:not-allowed}
 .verifier-panel__mix-hint{font-size:11.5px;color:var(--dsw-alias-text-secondary,#6b7280);line-height:1.5}
+.verifier-panel__mix-badges{display:flex;flex-wrap:wrap;gap:6px;max-height:150px;overflow-y:auto}
+.verifier-panel__mix-badge{padding:3px 10px;border:1px solid var(--dsw-alias-border-default,#e5e7eb);border-radius:12px;background:var(--dsw-alias-bg-canvas,#fff);color:var(--dsw-alias-text-primary,#111827);font-size:11.5px;cursor:pointer;transition:border-color .15s;white-space:nowrap}
+.verifier-panel__mix-badge:hover{border-color:var(--dsw-alias-accent-primary,#2563eb);color:var(--dsw-alias-accent-primary,#2563eb)}
 `;
 		const CSS_TAG = "dsh-llm-verifier-pro/client/panel.css";
 		if (typeof document !== "undefined" && document.querySelector(`style[data-plugin-css="${CSS_TAG}"]`) === null) {
@@ -129,35 +132,59 @@ window.__ModuleLoader__.load({
 				scope.set("boNPresetCandidates", Number.parseInt(key, 10));
 			};
 
-			// Model mix: lines of "<provider>/<model>" (or bare model id on the
-			// conversation's provider). The panel holds a text draft that lazily
-			// reflects the stored section; saving parses + writes it.
+			// Model mix: one FULL model id per line (e.g. `ollama-local/qwen3.8:27b`),
+			// exactly as the dsh provider advertises them. The provider is never
+			// edited here — every rollout keeps the conversation's provider and
+			// only the model id changes. The panel holds a text draft that
+			// lazily reflects the stored section; saving parses + writes it.
 			const mixLines = Array.isArray(section.boNModelMix) && section.boNModelMix.length > 0
-				? section.boNModelMix.map((entry) => entry.provider && entry.model ? entry.provider + "/" + entry.model : "")
+				? section.boNModelMix.filter((id) => typeof id === "string" && id.length > 0)
 				: [];
 			const mixText = mixDraft !== null ? mixDraft : mixLines.join("\n");
 			const normalizeMix = (text) => {
-				const entries = [];
+				const ids = [];
 				for (const raw of (text ?? "").split("\n")) {
 					const line = raw.trim();
 					if (line === "") continue;
-					const slash = line.indexOf("/");
-					if (slash >= 0) {
-						const provider = line.slice(0, slash).trim();
-						const model = line.slice(slash + 1).trim();
-						if (provider && model) entries.push({ provider, model });
-					} else if (line.length > 0) {
-						// Bare id: keep the conversation's provider by leaving it
-						// unset and letting the host fill the default provider.
-						entries.push({ provider: "", model: line });
-					}
+					ids.push(line);
 				}
-				return entries;
+				return ids;
 			};
 			const saveMix = () => {
 				const entries = normalizeMix(mixText);
 				scope.set("boNModelMix", entries);
 				setMixDraft(null); // re-sync from the stored section
+			};
+
+			// Available models from the host half (ctx.llm.listProviders()),
+			// for the mix picker. Loading is best-effort: no host, or an error,
+			// leaves the picker empty but never breaks the panel.
+			const [availableModels, setAvailableModels] = useState(null);
+			const [modelsError, setModelsError] = useState(null);
+			useEffect(() => {
+				let cancelled = false;
+				try {
+					host.call("verifier-pro.available-models").then((rows) => {
+						if (cancelled) return;
+						if (rows && Array.isArray(rows) && rows.length > 0) setAvailableModels(rows);
+						else if (rows && rows.error) setModelsError(String(rows.error));
+						else setModelsError("host 未返回可用模型（无 provider 路由）。");
+					}).catch((error) => { if (!cancelled) setModelsError(String(error && error.message || error)); });
+				} catch (error) {
+					if (!cancelled) setModelsError(String(error && error.message || error));
+				}
+				return () => { cancelled = true; };
+			}, []);
+			const appendModel = (display) => {
+				const current = mixText.trim();
+				const next = current === "" ? display : current + "\n" + display;
+				setMixDraft(next);
+			};
+			const restoreDefaults = () => {
+				// Empty mix re-reads the plugin-config base (schema ⊕ base),
+				// which is the "default" configuration.
+				scope.set("boNModelMix", []);
+				setMixDraft(null);
 			};
 
 			return h("div", { className: "verifier-panel" },
@@ -221,14 +248,33 @@ window.__ModuleLoader__.load({
 				h("div", { className: "verifier-panel__mix" },
 					h("textarea", {
 						value: mixText,
-						placeholder: "provider/model，每行一个：\nollama-local/qwen3.8:27b\nagnes/agnes-2.5-flash\nollama-local/ornith-1.5:35b",
+						placeholder: "完整 model id，每行一个（provider 不变，用会话的）：\nollama-local/qwen3.8:27b\nagnes/agnes-2.5-flash\nollama-local/ornith-1.5:35b",
 						disabled: busy,
 						onChange: (event) => { setMixDraft(event.target.value); },
 					}),
 					h("div", { className: "verifier-panel__mix-actions" },
 						h("button", { className: "verifier-panel__mix-btn", disabled: busy, onClick: saveMix }, "保存混合模型"),
+						h("button", { className: "verifier-panel__mix-btn", disabled: busy, onClick: restoreDefaults }, "恢复配置默认"),
 						h("span", { className: "verifier-panel__mix-hint" },
 							"第 0 个候选始终用当前会话模型（贪心锚点）；其余按此列表逐格分配，超出列表的格子回退为锚点模型的高温变体。留空 = 全部同模型采样。"),
+					),
+					(modelsError !== null
+						? h("p", { className: "verifier-panel__mix-hint" }, "可用模型不可用：" + modelsError)
+						: availableModels !== null
+							? h("div", { className: "verifier-panel__mix" },
+								h("div", { className: "verifier-panel__mix-hint" },
+									"可用模型（点击追加到上方列表）——已选：" + String(mixLines.length) + " 个"),
+								h("div", { className: "verifier-panel__mix-badges" },
+									availableModels.map((row) => h("button", {
+										key: row.provider + "/" + row.model,
+										type: "button",
+										className: "verifier-panel__mix-badge",
+										title: "provider: " + row.provider,
+										onClick: () => appendModel(row.model),
+									}, row.model)),
+								),
+							)
+							: h("p", { className: "verifier-panel__mix-hint" }, "正在读取可用模型…"),
 					),
 				),
 				h("div", { className: "verifier-panel__degrade" },

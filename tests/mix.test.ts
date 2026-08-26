@@ -7,7 +7,7 @@ import { createMockOpenAI, pairwiseCompletion, type MockOpenAIServer } from './h
 /** Drive orchestrate with stub stream/backend and record every sampled request. */
 async function collectSampledRequests(opts: {
   nCandidates: number
-  mixModels?: Array<{ provider: string; model: string }>
+  mixModels?: string[]
 }): Promise<GenerateOptions[]> {
   const mock: MockOpenAIServer = await createMockOpenAI()
   mock.setScript(() => pairwiseCompletion(' A ', ' T ')) // A (best) vs T (worst) per pair
@@ -48,41 +48,42 @@ describe('Bo-N model mix', () => {
     }
   })
 
-  it('assigns mix entries to non-anchor slots in order', async () => {
+  it('assigns mix entries to non-anchor slots in order (model id override only, provider kept)', async () => {
     const reqs = await collectSampledRequests({
       nCandidates: 5,
       mixModels: [
-        { provider: 'ollama-local', model: 'qwen3.8:27b' },
-        { provider: 'agnes', model: 'agnes-2.5-flash' },
-        { provider: 'ollama-local', model: 'ornith-1.5:35b' },
+        'ollama-local/qwen3.8:27b',
+        'agnes/agnes-2.5-flash',
+        'ollama-local/ornith-1.5:35b',
       ],
     })
     expect(reqs).toHaveLength(4)
-    expect(reqs[0]).toMatchObject({ provider: 'ollama-local', model: 'qwen3.8:27b', temperature: 0.7 })
-    expect(reqs[1]).toMatchObject({ provider: 'agnes', model: 'agnes-2.5-flash' })
-    expect(reqs[2]).toMatchObject({ provider: 'ollama-local', model: 'ornith-1.5:35b' })
+    // Provider stays the conversation's (omni-chat); only the model id changes.
+    expect(reqs[0]).toMatchObject({ provider: 'omni-chat', model: 'ollama-local/qwen3.8:27b', temperature: 0.7 })
+    expect(reqs[1]).toMatchObject({ provider: 'omni-chat', model: 'agnes/agnes-2.5-flash' })
+    expect(reqs[2]).toMatchObject({ provider: 'omni-chat', model: 'ollama-local/ornith-1.5:35b' })
     // Slot beyond the mix list → fallback to anchor model.
     expect(reqs[3]).toMatchObject({ provider: 'omni-chat', model: 'opencode-go/deepseek-v4-flash' })
     // Sanity: the anchor itself never appears in sampled (it rides next()).
     expect(reqs.every((req) => req.model === 'opencode-go/deepseek-v4-flash')).toBe(false)
   })
 
-  it('a bare model id (empty provider) inherits the conversation provider', async () => {
+  it('a mix entry is used verbatim as the full model id (never re-split)', async () => {
     const reqs = await collectSampledRequests({
       nCandidates: 3,
-      mixModels: [{ provider: '', model: 'some-local-model' }],
+      mixModels: ['ollama-local/qwen3.8:27b'],
     })
     expect(reqs).toHaveLength(2)
-    expect(reqs[0]).toMatchObject({ provider: 'omni-chat', model: 'some-local-model' })
+    expect(reqs[0]).toMatchObject({ provider: 'omni-chat', model: 'ollama-local/qwen3.8:27b' })
   })
 
   it('fewer mix entries than candidates: the tail falls back to anchor-model variants', async () => {
     const reqs = await collectSampledRequests({
       nCandidates: 6,
-      mixModels: [{ provider: 'ollama-local', model: 'qwen3.8:27b' }],
+      mixModels: ['ollama-local/qwen3.8:27b'],
     })
     expect(reqs).toHaveLength(5)
-    expect(reqs[0]).toMatchObject({ provider: 'ollama-local', model: 'qwen3.8:27b' })
+    expect(reqs[0]).toMatchObject({ provider: 'omni-chat', model: 'ollama-local/qwen3.8:27b' })
     for (let i = 1; i < reqs.length; i++) {
       expect(reqs[i]!.model).toBe('opencode-go/deepseek-v4-flash')
     }
