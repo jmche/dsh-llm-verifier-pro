@@ -105,6 +105,27 @@ window.__ModuleLoader__.load({
 			const [customDraft, setCustomDraft] = useState("5");
 			const [verifyDraft, setVerifyDraft] = useState("90");
 			const [mixDraft, setMixDraft] = useState(null);
+			// Available models from the host half (ctx.llm.listProviders()),
+			// for the mix picker. Loading is best-effort: no host, or an error,
+			// leaves the picker empty but never breaks the panel.
+			// NOTE: declared BEFORE any conditional return — React hooks must run
+			// unconditionally, and `knownProviders` below reads `availableModels`.
+			const [availableModels, setAvailableModels] = useState(null);
+			const [modelsError, setModelsError] = useState(null);
+			useEffect(() => {
+				let cancelled = false;
+				try {
+					host.call("verifier-pro.available-models").then((rows) => {
+						if (cancelled) return;
+						if (rows && Array.isArray(rows) && rows.length > 0) setAvailableModels(rows);
+						else if (rows && rows.error) setModelsError(String(rows.error));
+						else setModelsError("host 未返回可用模型（无 provider 路由）。");
+					}).catch((error) => { if (!cancelled) setModelsError(String(error && error.message || error)); });
+				} catch (error) {
+					if (!cancelled) setModelsError(String(error && error.message || error));
+				}
+				return () => { cancelled = true; };
+			}, []);
 			const status = snapshot.status;
 			if (status === "loading") {
 				return h("p", { className: "verifier-panel__status" }, "正在读取设置…");
@@ -181,25 +202,6 @@ window.__ModuleLoader__.load({
 				setMixDraft(null); // re-sync from the stored section
 			};
 
-			// Available models from the host half (ctx.llm.listProviders()),
-			// for the mix picker. Loading is best-effort: no host, or an error,
-			// leaves the picker empty but never breaks the panel.
-			const [availableModels, setAvailableModels] = useState(null);
-			const [modelsError, setModelsError] = useState(null);
-			useEffect(() => {
-				let cancelled = false;
-				try {
-					host.call("verifier-pro.available-models").then((rows) => {
-						if (cancelled) return;
-						if (rows && Array.isArray(rows) && rows.length > 0) setAvailableModels(rows);
-						else if (rows && rows.error) setModelsError(String(rows.error));
-						else setModelsError("host 未返回可用模型（无 provider 路由）。");
-					}).catch((error) => { if (!cancelled) setModelsError(String(error && error.message || error)); });
-				} catch (error) {
-					if (!cancelled) setModelsError(String(error && error.message || error));
-				}
-				return () => { cancelled = true; };
-			}, []);
 			const appendModel = (row) => {
 				// Explicit provider route when the badge's provider isn't the
 				// conversation's provider — the panel can't know the latter, so
