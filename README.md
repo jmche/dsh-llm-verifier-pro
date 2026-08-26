@@ -51,7 +51,10 @@ section has a dedicated editor — one `provider/model` per line; a line without
 `provider` is a REAL dsh provider route (`omni-chat`, `omni-message`,
 `deepseek-official`…); `model` is the FULL model id exactly as that provider
 advertises it (possibly containing its own `/`, e.g. `agnes/agnes-2.5-flash`).
-The panel splits each line at its FIRST `/`.
+The panel splits each line at its FIRST `/` — so a model id that itself
+contains `/` (e.g. `ollama-local/qwen3.8:27b`) MUST be written with its real
+provider (`omni-chat/ollama-local/qwen3.8:27b`) in the panel; only a model id
+WITHOUT `/` can ride the conversation's provider as a bare line.
 
 ```yaml
 boNModelMix:

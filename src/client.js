@@ -174,12 +174,16 @@ window.__ModuleLoader__.load({
 			};
 
 			// Model mix editor. Each line is either:
-			//   - `model` (a FULL model id, e.g. `ollama-local/qwen3.8:27b`) —
+			//   - `model` (a FULL model id WITHOUT `/`, e.g. `deepseek-v4-pro`) —
 			//     sampled with the conversation's provider; or
 			//   - `provider/model` — an explicit provider route, e.g.
 			//     `omni-message/opencode-go/minimax-m3`.
-			// The first `/` splits provider (left) from model id (right); a line
-			// without `/` is a full model id on the conversation's provider.
+			// The first `/` splits provider (left) from model id (right); that is
+			// why a full model id containing `/` (e.g. `ollama-local/qwen3.8:27b`)
+			// must be written as `omni-chat/ollama-local/qwen3.8:27b` to name its
+			// provider explicitly — it can never ride "the conversation's
+			// provider" in the panel, because the split would take the part
+			// before `/` as the provider.
 			// The panel holds a text draft that lazily reflects the stored
 			// section; saving parses + writes it.
 			const mixLines = Array.isArray(section.boNModelMix) && section.boNModelMix.length > 0
@@ -297,7 +301,7 @@ window.__ModuleLoader__.load({
 				h("div", { className: "verifier-panel__mix" },
 					h("textarea", {
 						value: mixText,
-						placeholder: "每行一个。\n• 完整 model id（用会话的 provider）：\n  ollama-local/qwen3.8:27b\n• provider/model（跨 provider 采样）：\n  omni-message/opencode-go/minimax-m3\n  deepseek-official/deepseek-v4-pro",
+						placeholder: "每行一个。第一个 / 前是 provider，之后是 model：\n• provider/model（指定 provider）：\n  omni-message/opencode-go/minimax-m3\n  omni-chat/ollama-local/qwen3.8:27b\n• 不含 / 的 model id（用会话的 provider）：\n  deepseek-v4-pro",
 						disabled: busy,
 						onChange: (event) => { setMixDraft(event.target.value); },
 					}),
