@@ -132,23 +132,48 @@ window.__ModuleLoader__.load({
 				scope.set("boNPresetCandidates", Number.parseInt(key, 10));
 			};
 
-			// Model mix: one FULL model id per line (e.g. `ollama-local/qwen3.8:27b`),
-			// exactly as the dsh provider advertises them. The provider is never
-			// edited here — every rollout keeps the conversation's provider and
-			// only the model id changes. The panel holds a text draft that
-			// lazily reflects the stored section; saving parses + writes it.
+			// Model mix editor. Each line is either:
+			//   - `model` (a FULL model id, e.g. `ollama-local/qwen3.8:27b`) —
+			//     sampled with the conversation's provider; or
+			//   - `knownProvider/model` — an explicit provider route (only when
+			//     the part before `/` is a REAL provider from the host's list),
+			//     e.g. `omni-message/opencode-go/minimax-m3`.
+			// The panel holds a text draft that lazily reflects the stored
+			// section; saving parses + writes it.
+			const knownProviders = Array.isArray(availableModels)
+				? [...new Set(availableModels.map((row) => row.provider))]
+				: [];
+			const knownProviderSet = new Set(knownProviders);
 			const mixLines = Array.isArray(section.boNModelMix) && section.boNModelMix.length > 0
-				? section.boNModelMix.filter((id) => typeof id === "string" && id.length > 0)
+				? section.boNModelMix.map((entry) => {
+					if (typeof entry === "string") return entry;
+					if (entry && typeof entry === "object" && entry.model)
+						return (entry.provider && entry.provider.length > 0)
+							? entry.provider + "/" + entry.model
+							: entry.model;
+					return "";
+				}).filter((line) => line.length > 0)
 				: [];
 			const mixText = mixDraft !== null ? mixDraft : mixLines.join("\n");
 			const normalizeMix = (text) => {
-				const ids = [];
-				for (const raw of (text ?? "").split("\n")) {
+				const entries = [];
+				const lines = (text ?? "").split("\n");
+				for (const raw of lines) {
 					const line = raw.trim();
 					if (line === "") continue;
-					ids.push(line);
+					const firstSlash = line.indexOf("/");
+					if (firstSlash > 0) {
+						const head = line.slice(0, firstSlash);
+						if (knownProviderSet.has(head)) {
+							// Explicit provider route: knownProvider/model-id...
+							entries.push({ provider: head, model: line.slice(firstSlash + 1).trim() });
+							continue;
+						}
+					}
+					// Full model id on the conversation's provider.
+					entries.push(line);
 				}
-				return ids;
+				return entries;
 			};
 			const saveMix = () => {
 				const entries = normalizeMix(mixText);
@@ -175,9 +200,13 @@ window.__ModuleLoader__.load({
 				}
 				return () => { cancelled = true; };
 			}, []);
-			const appendModel = (display) => {
+			const appendModel = (row) => {
+				// Explicit provider route when the badge's provider isn't the
+				// conversation's provider — the panel can't know the latter, so
+				// ALWAYS write the explicit route on click (it's unambiguous).
+				const entry = row.provider + "/" + row.model;
 				const current = mixText.trim();
-				const next = current === "" ? display : current + "\n" + display;
+				const next = current === "" ? entry : current + "\n" + entry;
 				setMixDraft(next);
 			};
 			const restoreDefaults = () => {
@@ -248,7 +277,7 @@ window.__ModuleLoader__.load({
 				h("div", { className: "verifier-panel__mix" },
 					h("textarea", {
 						value: mixText,
-						placeholder: "完整 model id，每行一个（provider 不变，用会话的）：\nollama-local/qwen3.8:27b\nagnes/agnes-2.5-flash\nollama-local/ornith-1.5:35b",
+						placeholder: "每行一个。\n• 完整 model id（用会话的 provider）：\n  ollama-local/qwen3.8:27b\n• provider/model（跨 provider 采样）：\n  omni-message/opencode-go/minimax-m3\n  deepseek-official/deepseek-v4-pro",
 						disabled: busy,
 						onChange: (event) => { setMixDraft(event.target.value); },
 					}),
@@ -269,9 +298,9 @@ window.__ModuleLoader__.load({
 										key: row.provider + "/" + row.model,
 										type: "button",
 										className: "verifier-panel__mix-badge",
-										title: "provider: " + row.provider,
-										onClick: () => appendModel(row.model),
-									}, row.model)),
+										title: "provider: " + row.provider + "（点击以该 provider 加入混合）",
+										onClick: () => appendModel(row),
+									}, row.provider + "/" + row.model)),
 								),
 							)
 							: h("p", { className: "verifier-panel__mix-hint" }, "正在读取可用模型…")

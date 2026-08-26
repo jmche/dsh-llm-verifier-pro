@@ -108,14 +108,26 @@ export interface Config {
   boNSeed?: number
   /**
    * Model mix for Bo-N candidates beyond the greedy anchor. Candidate 0 is
-   * always the conversation's own model; each later slot takes one FULL model
-   * id from this list in order (e.g. `ollama-local/qwen3.8:27b`), and slots
-   * beyond the list fall back to the anchor model. The conversation's
-   * provider stays untouched; only the model id is overridden. Configurable
-   * in the Web settings panel (verifier-pro section) too.
+   * always the conversation's own model; each later slot draws one entry in
+   * order, and slots beyond the list fall back to the anchor model.
+   *
+   * Each entry is either:
+   *   - a FULL model id string (e.g. `ollama-local/qwen3.8:27b`) — sampled
+   *     with the conversation's own provider; or
+   *   - `{ provider, model }` — sampled with an EXPLICIT provider route
+   *     (e.g. `{ provider: 'omni-message', model: 'opencode-go/minimax-m3' }`),
+   *     overriding the conversation's provider for that candidate only.
+   *
+   * Configurable in the Web settings panel (verifier-pro section) too.
    */
-  boNModelMix?: string[]
+  boNModelMix?: Array<ModelMixEntry>
 }
+
+/**
+ * One entry of the Bo-N model mix: either a full model id string (conversation
+ * provider) or an explicit `{ provider, model }` route.
+ */
+export type ModelMixEntry = string | { provider?: string; model: string }
 
 export const Config: z<Config> = z.object({
   baseUrl: z.string(),
@@ -139,7 +151,7 @@ export const Config: z<Config> = z.object({
   criteria: z.array(z.string()).default([]),
   boNPivots: z.number().default(2),
   boNSeed: z.number().default(0),
-  boNModelMix: z.array(z.string()).default([]),
+  boNModelMix: z.array(z.union([z.string(), z.object({ provider: z.string(), model: z.string() })])).default([]),
 })
 
 /** The settings section shape this plugin reads (and the Web UI panel writes). */
@@ -157,8 +169,8 @@ export interface VerifierSettingsSection {
   verifyTimeoutMs?: number
   /** Extra grading criteria for Bo-N comparison prompts. */
   criteria?: string[]
-  /** Best-of-N model mix (full model ids for non-anchor candidates). */
-  boNModelMix?: string[]
+  /** Best-of-N model mix (full model ids or explicit provider/model routes). */
+  boNModelMix?: Array<ModelMixEntry>
 }
 
 /** The settings section schema. boN/boNCandidates carry NO schema default: a default would masquerade as user-set and override the plugin-config row. */
@@ -171,7 +183,7 @@ const SettingsSectionSchema = z.object({
   boNPresetCandidates: z.number(),
   verifyTimeoutMs: z.number(),
   criteria: z.array(z.string()),
-  boNModelMix: z.array(z.string()).default([]),
+  boNModelMix: z.array(z.union([z.string(), z.object({ provider: z.string(), model: z.string() })])).default([]),
 })
 
 /** A hot reader of the resolved settings section (re-read per call/turn). */

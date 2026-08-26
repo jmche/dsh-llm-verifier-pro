@@ -37,12 +37,14 @@ export interface BoNConfig {
    * slot count are ignored, and slots beyond the list fall back to the
    * anchor model at the sampling temperature.
    *
-   * Entries are FULL model ids exactly as the dsh provider advertises them
-   * (e.g. `ollama-local/qwen3.8:27b`, `agnes/agnes-2.5-flash`) — NOT bare
-   * names and NOT provider/model pairs. The conversation's provider is kept
-   * for every rollout; only the model id is overridden.
+   * Each entry is either:
+   *   - a FULL model id string (e.g. `ollama-local/qwen3.8:27b`) — sampled
+   *     with the conversation's own provider; or
+   *   - `{ provider, model }` — sampled with an EXPLICIT provider route
+   *     (e.g. `{ provider: 'omni-message', model: 'opencode-go/minimax-m3' }`),
+   *     overriding the conversation's provider for that candidate only.
    */
-  readonly mixModels?: readonly string[]
+  readonly mixModels?: readonly (string | { provider?: string; model: string })[]
   /**
    * Wall-clock budget for the sampling phase (rollouts + verdict). Past it the
    * turn degrades to a normal answer. NOTE: the verify phase carries its own
@@ -360,11 +362,16 @@ export async function* orchestrate(
   const extra = Math.max(0, config.nCandidates - 1)
   const mixed = config.mixModels ?? []
   const sampled = Array.from({ length: extra }, (_slot, i) => {
-    const modelId = mixed[i]
-    // Full model-id override; the conversation's provider stays untouched.
-    const request: GenerateOptions = modelId && modelId.length > 0
-      ? { ...options, temperature: config.samplingTemperature, model: modelId }
-      : { ...options, temperature: config.samplingTemperature }
+    const entry = mixed[i]
+    const request: GenerateOptions = {
+      ...options,
+      temperature: config.samplingTemperature,
+      ...(typeof entry === 'string' || typeof entry === 'undefined'
+        ? (entry !== undefined && entry.length > 0 ? { model: entry } : {})
+        : (entry.model.length > 0
+          ? { model: entry.model, ...(entry.provider && entry.provider.length > 0 ? { provider: entry.provider } : {}) }
+          : {})),
+    }
     markInternalRequest(request)
     return request
   })

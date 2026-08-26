@@ -7,7 +7,7 @@ import { createMockOpenAI, pairwiseCompletion, type MockOpenAIServer } from './h
 /** Drive orchestrate with stub stream/backend and record every sampled request. */
 async function collectSampledRequests(opts: {
   nCandidates: number
-  mixModels?: string[]
+  mixModels?: Array<string | { provider?: string; model: string }>
 }): Promise<GenerateOptions[]> {
   const mock: MockOpenAIServer = await createMockOpenAI()
   mock.setScript(() => pairwiseCompletion(' A ', ' T ')) // A (best) vs T (worst) per pair
@@ -48,7 +48,7 @@ describe('Bo-N model mix', () => {
     }
   })
 
-  it('assigns mix entries to non-anchor slots in order (model id override only, provider kept)', async () => {
+  it('string entries: model-id override only, provider kept', async () => {
     const reqs = await collectSampledRequests({
       nCandidates: 5,
       mixModels: [
@@ -68,13 +68,43 @@ describe('Bo-N model mix', () => {
     expect(reqs.every((req) => req.model === 'opencode-go/deepseek-v4-flash')).toBe(false)
   })
 
-  it('a mix entry is used verbatim as the full model id (never re-split)', async () => {
+  it('object entries override provider AND model per candidate', async () => {
+    const reqs = await collectSampledRequests({
+      nCandidates: 4,
+      mixModels: [
+        { provider: 'omni-message', model: 'opencode-go/minimax-m3' },
+        { provider: 'deepseek-official', model: 'deepseek-v4-pro' },
+        { provider: 'omni-chat', model: 'agnes/agnes-2.5-flash' },
+      ],
+    })
+    expect(reqs).toHaveLength(3)
+    expect(reqs[0]).toMatchObject({ provider: 'omni-message', model: 'opencode-go/minimax-m3', temperature: 0.7 })
+    expect(reqs[1]).toMatchObject({ provider: 'deepseek-official', model: 'deepseek-v4-pro' })
+    expect(reqs[2]).toMatchObject({ provider: 'omni-chat', model: 'agnes/agnes-2.5-flash' })
+  })
+
+  it('object entry with empty provider keeps the conversation provider', async () => {
     const reqs = await collectSampledRequests({
       nCandidates: 3,
-      mixModels: ['ollama-local/qwen3.8:27b'],
+      mixModels: [{ model: 'ollama-local/qwen3.8:27b' }],
     })
     expect(reqs).toHaveLength(2)
     expect(reqs[0]).toMatchObject({ provider: 'omni-chat', model: 'ollama-local/qwen3.8:27b' })
+  })
+
+  it('mixed string + object entries work together, in order', async () => {
+    const reqs = await collectSampledRequests({
+      nCandidates: 4,
+      mixModels: [
+        'ollama-local/qwen3.8:27b',
+        { provider: 'omni-message', model: 'opencode-go/minimax-m3' },
+      ],
+    })
+    expect(reqs).toHaveLength(3)
+    expect(reqs[0]).toMatchObject({ provider: 'omni-chat', model: 'ollama-local/qwen3.8:27b' })
+    expect(reqs[1]).toMatchObject({ provider: 'omni-message', model: 'opencode-go/minimax-m3' })
+    // Empty/undefined entry → anchor fallback
+    expect(reqs[2]).toMatchObject({ provider: 'omni-chat', model: 'opencode-go/deepseek-v4-flash' })
   })
 
   it('fewer mix entries than candidates: the tail falls back to anchor-model variants', async () => {
