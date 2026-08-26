@@ -1,0 +1,5 @@
+# Tests and dev assets never ship to npm.
+tests/
+refs/
+.coverage/
+*.tsbuildinfo
