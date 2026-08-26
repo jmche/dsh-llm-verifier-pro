@@ -274,7 +274,7 @@ window.__ModuleLoader__.load({
 									}, row.model)),
 								),
 							)
-							: h("p", { className: "verifier-panel__mix-hint" }, "正在读取可用模型…"),
+							: h("p", { className: "verifier-panel__mix-hint" }, "正在读取可用模型…")
 					),
 				),
 				h("div", { className: "verifier-panel__degrade" },
