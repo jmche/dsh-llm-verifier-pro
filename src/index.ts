@@ -190,6 +190,46 @@ const SettingsSectionSchema = z.object({
 export type SettingsSectionReader = () => VerifierSettingsSection
 
 /**
+ * Normalize one model-mix value to the runtime entry shape (`string` or
+ * `{ provider, model }`). Values may arrive from three places with three
+ * dialects:
+ *   - plugin config (object or string; exact),
+ *   - the settings document (object, string, or legacy `provider/model` text),
+ *   - the Web panel (parsed already).
+ * A legacy `omni-chat/agnes/agnes-2.5-flash` string whose head is a REAL
+ * provider name is split into `{ provider, model }`; anything else stays a
+ * full model id (inherits the conversation provider).
+ */
+export function normalizeMixEntry(entry: ModelMixEntry | string, knownProviders: ReadonlySet<string>): string | { provider?: string; model: string } {
+  if (typeof entry !== 'string') return entry
+  const slash = entry.indexOf('/')
+  if (slash > 0) {
+    const head = entry.slice(0, slash)
+    if (knownProviders.has(head) && entry.slice(slash + 1).length > 0) {
+      return { provider: head, model: entry.slice(slash + 1) }
+    }
+  }
+  return entry
+}
+
+/** Best-effort set of real provider route names routed by the llm service. */
+function knownProvidersOf(ctx: Context): Set<string> {
+  const names = new Set<string>(['deepseek-official'])
+  try {
+    const providers = ctx.llm?.listProviders?.() ?? []
+    for (const entry of providers) {
+      // LlmProviderInfo: { id (route key), name (display) }.
+      if (typeof (entry as { id?: unknown })?.id === 'string' && (entry as { id: string }).id.length > 0) {
+        names.add((entry as { id: string }).id)
+      }
+    }
+  } catch {
+    // llm seam unavailable — keep the built-in name only.
+  }
+  return names
+}
+
+/**
  * Register the verifier settings namespace and return a hot reader.
  * The settings seam is optional (delegate-and-degrade): without it the reader
  * yields the empty section and explicit plugin config carries everything.
@@ -721,7 +761,14 @@ export function apply(ctx: Context, config: Config): void {
         nCandidates: decision.nCandidates,
         samplingTemperature: cfg.samplingTemperature ?? 0.7,
         // Web panel wins over plugin config for the mix (hot re-read per turn).
-        mixModels: (sectionReader().boNModelMix?.length ? sectionReader().boNModelMix : cfg.boNModelMix) as BoNConfig['mixModels'],
+        // both layers are normalized: settings-document strings like
+        // `omni-chat/agnes/...` whose head is a real provider become explicit
+        // routes; anything else stays a full model id (conversation provider).
+        mixModels: (() => {
+          const raw = sectionReader().boNModelMix?.length ? sectionReader().boNModelMix : cfg.boNModelMix
+          const known = knownProvidersOf(ctx)
+          return (raw ?? []).map((entry) => normalizeMixEntry(entry as ModelMixEntry, known)) as BoNConfig['mixModels']
+        })(),
         timeoutMs: cfg.timeoutMsBoN ?? 120_000,
         verifyTimeoutMs: sectionReader().verifyTimeoutMs ?? cfg.verifyTimeoutMsBoN ?? 90_000,
         showFooter: cfg.showFooter ?? true,

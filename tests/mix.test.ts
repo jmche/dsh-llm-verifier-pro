@@ -119,3 +119,30 @@ describe('Bo-N model mix', () => {
     }
   })
 })
+describe('normalizeMixEntry (settings-document dialect)', () => {
+  const known = new Set(['omni-chat', 'omni-message', 'deepseek-official'])
+
+  it('splits a legacy `provider/model` string whose head is a real provider', async () => {
+    const { normalizeMixEntry } = await import('../src/index')
+    const out = normalizeMixEntry('omni-chat/agnes/agnes-2.5-flash', known)
+    expect(out).toEqual({ provider: 'omni-chat', model: 'agnes/agnes-2.5-flash' })
+  })
+
+  it('keeps a full model id string (head not a provider) as-is', async () => {
+    const { normalizeMixEntry } = await import('../src/index')
+    expect(normalizeMixEntry('ollama-local/qwen3.8:27b', known)).toBe('ollama-local/qwen3.8:27b')
+    expect(normalizeMixEntry('deepseek-v4-pro', known)).toBe('deepseek-v4-pro')
+  })
+
+  it('passes object entries through untouched', async () => {
+    const { normalizeMixEntry } = await import('../src/index')
+    const entry = { provider: 'omni-message', model: 'opencode-go/minimax-m3' }
+    expect(normalizeMixEntry(entry, known)).toBe(entry)
+  })
+
+  it('does not split when the head is empty or the tail is empty', async () => {
+    const { normalizeMixEntry } = await import('../src/index')
+    expect(normalizeMixEntry('/agnes/agnes-2.5-flash', known)).toBe('/agnes/agnes-2.5-flash')
+    expect(normalizeMixEntry('omni-chat/', known)).toBe('omni-chat/')
+  })
+})
