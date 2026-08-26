@@ -1,0 +1,682 @@
+/**
+ * dsh-llm-verifier-pro: LLM-as-a-Verifier for DeepSeek Harness (unified).
+ *
+ * Merges the engineering of dsh-llm-as-a-verifier (TaurenMountain, MIT) —
+ * fine-grained logprob scoring, Probabilistic Pivot Tournament, vLLM/SGLang
+ * prefill, concurrency + timeout + token accounting — with the Best-of-N
+ * conversation mode and Web settings panel of @aispin/plugin-verifier
+ * (Aispin, MIT). Method by the LLM-as-a-Verifier paper (arXiv:2607.05391).
+ *
+ * Three faces:
+ *  1. Tools — `verify_compare` / `verify_select` / `verify_track` (agent calls
+ *     them on demand for fine-grained probabilistic feedback).
+ *  2. Service — `ctx.verifierPro.verify/compare/select/track` for code consumers.
+ *  3. Mode — Best-of-N conversation mode: every assistant turn of a Bo-N
+ *     session is sampled N ways and only the winning response replayed.
+ *     Three-state gating: settings global (Web UI switch) → session preset →
+ *     config default → off.
+ *
+ * Verifier credentials resolve zero-config from the dsh provider state:
+ * plugin config (baseUrl/apiKey/model) → the `verifier` settings namespace →
+ * the credentials seam (`credential:<name>` or the ambient key env) →
+ * OPENAI_BASE_URL/OPENAI_API_KEY/DEEPSEEK_API_KEY.
+ *
+ * @module dsh-llm-verifier-pro
+ */
+
+import { Service } from '@deepseek-ai/cordis'
+import type { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
+import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { JsonValue } from '@deepseek-ai/dsh-tools'
+import type { StreamChunk, GenerateOptions } from '@deepseek-ai/dsh-llm'
+import type {} from '@deepseek-ai/dsh-system-prompt'
+import { credentialRef } from '@deepseek-ai/dsh-credentials'
+import { settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { VerifierBackend, type BackendConfig } from './backend.js'
+import { Verifier, type CompareOptions, type SelectOptions, type TrackOptions } from './verifier.js'
+import type { TokenUsageSnapshot } from './backend.js'
+import { orchestrate, isInternalRequest, markInternalRequest, verifyBest, taskOf } from './bon.js'
+import type { BoNConfig, BoNTurnSummary } from './bon.js'
+
+export {
+  VerifierBackend,
+  TokenUsage,
+  MissingAPIKeyError,
+  VerifierError,
+} from './backend.js'
+export type { BackendConfig, TokenUsageSnapshot } from './backend.js'
+export { Verifier } from './verifier.js'
+export { extractScore, SCALE, GRANULARITY, normalizeCriteria, buildPairwisePrompt } from './scoring.js'
+export type { Criterion, CriteriaInput, LogprobToken, VerifierOutput } from './scoring.js'
+export { selectBest, bradleyTerry, ringCycle, pivotRoundPairs, selectPivots, createRng, DEFAULT_PIVOTS, accumulate } from './tournament.js'
+export { extractProgressScores, buildProgressPrompt, LETTER_TO_VALUE, defaultCheckpoints } from './progress.js'
+export { orchestrate, collectRollout, replayWithFooter, verifyBest, taskOf, isInternalRequest, markInternalRequest } from './bon.js'
+export type { BoNConfig, BoNTurnSummary, Rollout, VerifyResult, OrchestrateDeps } from './bon.js'
+
+/** Cordis plugin name used by loader diagnostics. */
+export const name = 'llm-verifier-pro'
+
+/** Services required. `tools` + `systemPrompt` for the tool face; `llm` for the Bo-N sampling re-entry. */
+export const inject = ['tools', 'systemPrompt', 'llm'] as const
+
+/** Plugin configuration (dsh config cascade). */
+export interface Config {
+  // ── verifier endpoint (shared by the tool, service and Bo-N faces) ──
+  /** OpenAI-compatible base URL. Empty (default) resolves: settings section → OPENAI_BASE_URL → DEEPSEEK_API_KEY implies api.deepseek.com. */
+  baseUrl?: string
+  /** API key. Supports `credential:<name>` (dsh credentials seam), `env:VAR`, or a plain value. Empty → settings section → seam/ambient env. */
+  apiKey?: string
+  /** Verifier model. Empty → settings section → the conversation's model (DeepSeek routes only) → deepseek-v4-flash, or /models on non-DeepSeek endpoints. */
+  model?: string
+  /** Per-request timeout in milliseconds. Defaults to 60000. */
+  timeoutMs?: number
+  /** Maximum in-flight verifier calls. Defaults to 8. */
+  maxConcurrency?: number
+  /** Force the DeepSeek call path. Auto-detected from the base URL. */
+  deepseek?: boolean
+  /** vLLM/SGLang prefill pass for score tags on non-DeepSeek servers. Defaults to true. */
+  prefill?: boolean
+  /** Settings namespace whose section supplies baseUrl/apiKey/model — and the Bo-N global switch. */
+  settingsNs?: string
+  /** Register `verify_compare`. Defaults to true. */
+  compare?: boolean
+  /** Register `verify_select`. Defaults to true. */
+  select?: boolean
+  /** Register `verify_track`. Defaults to true. */
+  track?: boolean
+  // ── Best-of-N mode face ──
+  /** Deployment-level default for the mode. */
+  boN?: boolean
+  /** Candidates per Bo-N turn when active. Defaults to 5. */
+  boNCandidates?: number
+  /** Session agent-preset ids that turn the mode on. Defaults to ['bo-n']. */
+  boNPresetIds?: string[]
+  /** Sampling temperature for the diversity rollouts. Defaults to 0.7. */
+  samplingTemperature?: number
+  /** Wall-clock budget for the sampling phase. Defaults to 120s. */
+  timeoutMsBoN?: number
+  /** INDEPENDENT wall-clock budget for the verify phase. Defaults to 90s. */
+  verifyTimeoutMsBoN?: number
+  /** Append a muted Best-of-N footer under the winning answer. Defaults to true. */
+  showFooter?: boolean
+  /** Extra grading criteria appended to the Bo-N comparison prompt. */
+  criteria?: string[]
+  /** PPT pivots k used by Bo-N selection. Defaults to 2. */
+  boNPivots?: number
+  /** PPT ring seed (default 0: fixed, reproducible). */
+  boNSeed?: number
+}
+
+export const Config: z<Config> = z.object({
+  baseUrl: z.string(),
+  apiKey: z.string(),
+  model: z.string(),
+  timeoutMs: z.number(),
+  maxConcurrency: z.number(),
+  deepseek: z.boolean(),
+  prefill: z.boolean(),
+  settingsNs: z.string().default('verifier-pro'),
+  compare: z.boolean().default(true),
+  select: z.boolean().default(true),
+  track: z.boolean().default(true),
+  boN: z.boolean().default(false),
+  boNCandidates: z.number().default(5),
+  boNPresetIds: z.array(z.string()).default(['bo-n']),
+  samplingTemperature: z.number().default(0.7),
+  timeoutMsBoN: z.number().default(120_000),
+  verifyTimeoutMsBoN: z.number().default(90_000),
+  showFooter: z.boolean().default(true),
+  criteria: z.array(z.string()).default([]),
+  boNPivots: z.number().default(2),
+  boNSeed: z.number().default(0),
+})
+
+/** The settings section shape this plugin reads (and the Web UI panel writes). */
+export interface VerifierSettingsSection {
+  baseURL?: string
+  apiKey?: string
+  model?: string
+  /** Bo-N global switch. */
+  boN?: boolean
+  /** Global-tier candidates override. */
+  boNCandidates?: number
+  /** Candidates for sessions that selected a Bo-N PRESET — independent from the global tier. */
+  boNPresetCandidates?: number
+  /** Verify-phase wall-clock budget in ms. */
+  verifyTimeoutMs?: number
+  /** Extra grading criteria for Bo-N comparison prompts. */
+  criteria?: string[]
+}
+
+/** The settings section schema. boN/boNCandidates carry NO schema default: a default would masquerade as user-set and override the plugin-config row. */
+const SettingsSectionSchema = z.object({
+  baseURL: z.string().default(''),
+  apiKey: z.string().default(''),
+  model: z.string().default(''),
+  boN: z.boolean(),
+  boNCandidates: z.number(),
+  boNPresetCandidates: z.number(),
+  verifyTimeoutMs: z.number(),
+  criteria: z.array(z.string()),
+})
+
+/** A hot reader of the resolved settings section (re-read per call/turn). */
+export type SettingsSectionReader = () => VerifierSettingsSection
+
+/**
+ * Register the verifier settings namespace and return a hot reader.
+ * The settings seam is optional (delegate-and-degrade): without it the reader
+ * yields the empty section and explicit plugin config carries everything.
+ */
+export function sectionReaderOf(ctx: Context, config: Config): SettingsSectionReader {
+  let scope: { get(): unknown } | undefined
+  const register = (host: unknown): void => {
+    const settings = (host as { settings?: { register(ns: unknown, schema: unknown): unknown } }).settings
+    if (settings === undefined) return
+    try {
+      scope = settings.register(settingsNamespace(config.settingsNs ?? 'verifier-pro'), SettingsSectionSchema) as unknown as { get(): unknown }
+    } catch (error) {
+      // Duplicate registration (or a schema conflict) — degrade to explicit config.
+      console.error(`[verifier-pro] settings namespace registration failed (${error instanceof Error ? error.message : String(error)}); falling back to explicit config only`)
+    }
+  }
+  // Preferred path: declare the settings dependency and register once it is
+  // available (the real host publishes it after our mount has started). A
+  // plain cordis context (tests) or an unavailable settings plugin degrades to
+  // occasional probes — never a hard failure.
+  const inject = (ctx as { inject?: (deps: readonly string[], cb: (sctx: Context) => void) => void }).inject
+  if (inject !== undefined) {
+    try {
+      inject(['settings'], (sctx: Context) => register(sctx))
+    } catch (error) {
+      console.error(`[verifier-pro] settings inject failed (${error instanceof Error ? error.message : String(error)}); explicit config only`)
+    }
+  } else {
+    register(ctx)
+  }
+  return () => {
+    // Hot re-read; register lazily in case the seam arrived after first use.
+    if (scope === undefined) register(ctx)
+    return (scope?.get() ?? {}) as VerifierSettingsSection
+  }
+}
+
+/** Resolve an explicit API-key override: `env:VAR` or a plain value. `credential:<name>` handled in resolveBackend. */
+function resolveApiKeyOverride(raw: string): string {
+  if (raw.startsWith('env:')) {
+    const value = process.env[raw.slice(4)]
+    if (value === undefined || value.length === 0) {
+      throw new Error(`verifier: API key environment variable "${raw.slice(4)}" is not set`)
+    }
+    return value
+  }
+  return raw
+}
+
+/** Resolve one API key from the full chain. */
+async function resolveApiKey(ctx: Context, config: Config, section: VerifierSettingsSection, apiKeyEnv: string): Promise<string | undefined> {
+  const explicit = (config.apiKey ?? '').trim()
+  if (explicit.length > 0) {
+    if (explicit.startsWith('credential:')) {
+      const credentials = ctx.get('credentials')
+      const ref = credentialRef(explicit.slice('credential:'.length))
+      const hit = credentials === undefined ? undefined : await credentials.resolve(ref)
+      if (hit === undefined) throw new Error(`verifier: credential "${explicit.slice('credential:'.length)}" is not configured`)
+      return hit.value
+    }
+    return resolveApiKeyOverride(explicit)
+  }
+  if (section.apiKey?.trim().length) {
+    const sectionKey = section.apiKey.trim()
+    if (sectionKey.startsWith('credential:')) {
+      const credentials = ctx.get('credentials')
+      const ref = credentialRef(sectionKey.slice('credential:'.length))
+      const hit = credentials === undefined ? undefined : await credentials.resolve(ref)
+      if (hit === undefined) throw new Error(`verifier: credential "${sectionKey.slice('credential:'.length)}" is not configured`)
+      return hit.value
+    }
+    return sectionKey
+  }
+  const credentials = ctx.get('credentials')
+  const ref = credentialRef(apiKeyEnv)
+  const hit = credentials === undefined ? undefined : await credentials.resolve(ref)
+  if (hit !== undefined) return hit.value
+  const ambient = process.env[apiKeyEnv]
+  if (ambient !== undefined && ambient.length > 0) return ambient
+  return undefined
+}
+
+/**
+ * Resolve the verifier backend connection from dsh's configured provider
+ * state, with plugin-config overrides taking precedence, then the settings
+ * section, then the environment:
+ *
+ *  - base URL: config.baseUrl → section.baseURL → OPENAI_BASE_URL →
+ *    DEEPSEEK_API_KEY implies api.deepseek.com.
+ *  - API key: config.apiKey (credential:/env:/plain) → section.apiKey →
+ *    credentials seam (apiKeyEnv) → ambient environment.
+ *  - model: config.model → section.model → the conversation's model on
+ *    DeepSeek routes → deepseek-v4-flash (DeepSeek) / server /models (other).
+ */
+export async function resolveBackend(
+  ctx: Context,
+  config: Config,
+  conversation?: GenerateOptions,
+  sectionReader: SettingsSectionReader = () => ({}),
+): Promise<VerifierBackend> {
+  const section = sectionReader()
+  const apiKeyEnv = 'DEEPSEEK_API_KEY'
+
+  let baseUrl = (config.baseUrl ?? '').trim() || section.baseURL?.trim() || process.env.OPENAI_BASE_URL?.trim() || ''
+  if (baseUrl.length === 0 && process.env.DEEPSEEK_API_KEY?.trim()) baseUrl = 'https://api.deepseek.com'
+  if (baseUrl.length === 0) baseUrl = ''
+
+  const apiKey = await resolveApiKey(ctx, config, section, apiKeyEnv)
+
+  // Model: explicit → settings → conversation (DeepSeek routes only) → default.
+  const provider = conversation?.provider ?? ''
+  const conversationOnDeepSeek = provider === 'deepseek-official' || provider === 'deepseek'
+  const inheritedModel = conversationOnDeepSeek ? conversation?.model ?? '' : ''
+  const model = (config.model ?? '').trim() || section.model?.trim() || inheritedModel || ''
+
+  const deepseek = config.deepseek ?? (baseUrl.includes('api.deepseek.com') || (!process.env.OPENAI_BASE_URL && !config.baseUrl && Boolean(process.env.DEEPSEEK_API_KEY)))
+
+  const backendConfig: BackendConfig = {
+    model: model || undefined,
+    baseUrl: baseUrl || undefined,
+    apiKey,
+    timeoutMs: config.timeoutMs,
+    maxConcurrency: config.maxConcurrency,
+    deepseek,
+    prefill: config.prefill,
+  }
+  return new VerifierBackend(backendConfig)
+}
+
+/** The Bo-N mode decision for one conversation request. */
+export interface BoNModeDecision {
+  readonly enabled: boolean
+  readonly nCandidates: number
+  readonly source: 'settings-global' | 'session-preset' | 'config-default' | 'off'
+}
+
+/**
+ * The three-state Bo-N gating: settings global → session preset → config
+ * default → off. Settings are re-read per turn (hot).
+ */
+export function resolveBoNMode(ctx: Context, config: Config, sessionId: string | undefined, sectionReader: SettingsSectionReader = () => ({})): BoNModeDecision {
+  const section = sectionReader()
+  const globalCandidates = section.boNCandidates ?? config.boNCandidates ?? 5
+  const presetCandidates = section.boNPresetCandidates ?? config.boNCandidates ?? 5
+  // ① Settings global — the Web UI switch. An EXPLICIT false wins over
+  // everything; undefined falls through to per-session and deployment states.
+  if (section.boN === true) return { enabled: true, nCandidates: globalCandidates, source: 'settings-global' }
+  // ② Session preset — the durable agentPreset stamped on the session.
+  if (section.boN !== false && sessionId !== undefined) {
+    const sessions = ctx.get('sessions')
+    const session = sessions?.get(sessionId as never) as { agentPreset?: string } | undefined
+    if (session?.agentPreset !== undefined && (config.boNPresetIds ?? ['bo-n']).includes(session.agentPreset)) {
+      return { enabled: true, nCandidates: presetCandidates, source: 'session-preset' }
+    }
+  }
+  // ③ Config deployment default.
+  if (section.boN !== false && config.boN) return { enabled: true, nCandidates: globalCandidates, source: 'config-default' }
+  return { enabled: false, nCandidates: 0, source: 'off' }
+}
+
+/** The `ctx.verifierPro` service (service face). Unique name: the original
+ * `verifier` service is already registered by @aispin/plugin-verifier — both
+ * plugins coexist in one profile. */
+export class VerifierService extends Service {
+  private readonly config: Config
+  private readonly sectionReader: SettingsSectionReader
+  private backend: VerifierBackend | undefined
+
+  constructor(ctx: Context, config: Config, sectionReader: SettingsSectionReader = () => ({})) {
+    super(ctx, 'verifierPro')
+    this.config = config
+    this.sectionReader = sectionReader
+  }
+
+  private async backendFor(conversation?: GenerateOptions): Promise<VerifierBackend> {
+    // Lazy per-call resolution: a missing key fails the CALL, not the mount.
+    return resolveBackend(this.ctx, this.config, conversation, this.sectionReader)
+  }
+
+  /** Rank N candidates best-first with the PPT. */
+  async verify(options: { task: string; candidates: readonly string[]; criteria?: Record<string, string>; pivots?: number; seed?: number; nEvaluations?: number }): Promise<{ bestIndex: number; ranking: { index: number; score: number; normalized: number }[]; callsSpent: number }> {
+    if (options.candidates.length < 2) throw new Error('verifier: at least 2 candidates are required')
+    const backend = await this.backendFor()
+    const result = await verifyBest(backend, backend.config.model ?? 'deepseek-v4-flash', options.task, options.candidates, {
+      criteria: options.criteria ? Object.keys(options.criteria) : undefined,
+      pivots: options.pivots,
+      seed: options.seed,
+      nEvaluations: options.nEvaluations,
+    })
+    return { bestIndex: result.bestIndex, ranking: result.ranking as never, callsSpent: result.callsSpent }
+  }
+
+  /** Fine-grained rewards for one directed comparison. */
+  async compare(problem: string, traceA: string, traceB: string, criteriaInput: Record<string, string>, opts?: CompareOptions): Promise<{ scoreA: number; scoreB: number; criteria: string[]; usage: TokenUsageSnapshot }> {
+    const backend = await this.backendFor()
+    const verifier = new Verifier(backend.config)
+    return verifier.compare(problem, traceA, traceB, criteriaInput, opts)
+  }
+
+  /** PPT best-of-N selection (tool face parity). */
+  async select(problem: string, candidates: string[], criteriaInput: Record<string, string>, opts?: SelectOptions): Promise<{ index: number; best: string; scores: number[]; ranking: number[]; nComparisons: number; criteria: string[]; usage: TokenUsageSnapshot }> {
+    const backend = await this.backendFor()
+    const verifier = new Verifier(backend.config)
+    return verifier.select(problem, candidates, criteriaInput, opts)
+  }
+
+  /** Per-step progress tracking. */
+  async track(problem: string, steps: string[], opts?: TrackOptions): Promise<{ steps: number[]; scores: number[]; perRep: Array<Array<number | null>>; final: number; usage: TokenUsageSnapshot }> {
+    const backend = await this.backendFor()
+    const verifier = new Verifier(backend.config)
+    return verifier.track(problem, steps, opts)
+  }
+}
+
+/** Format token usage for footers and diagnostics. */
+function formatUsage(usage?: TokenUsageSnapshot): string {
+  const u = usage
+  if (!u) return ''
+  const rate = u.inputTokens > 0 ? (100 * u.cachedInputTokens) / u.inputTokens : 0
+  return `${u.calls} verifier call(s), input ${u.inputTokens} tokens (cached ${u.cachedInputTokens}, ${rate.toFixed(1)}% hit), output ${u.outputTokens} tokens (reasoning ${u.reasoningTokens})`
+}
+
+export function apply(ctx: Context, config: Config): void {
+  const cfg: Config = { ...config }
+
+  // Settings face: register the namespace once, read hot from here on.
+  const sectionReader = sectionReaderOf(ctx, cfg)
+
+  // Service face.
+  const service = new VerifierService(ctx, cfg, sectionReader)
+  ctx.verifierPro = service
+
+  const backendFor = async (): Promise<VerifierBackend> => {
+    // Lazily-created shared backend (Bo-N and tools share one instance so
+    // token accounting is holistic). A missing key fails the first CALL.
+    return service['backendFor']()
+  }
+
+  // ── Tool face ────────────────────────────────────────────────────────────
+  // verify_compare / verify_select / verify_track (inject verify* guidance).
+  ctx.systemPrompt.section({
+    name: 'tool:verify',
+    order: 120,
+    text:
+      'Use the verify_* tools to get fine-grained probabilistic feedback on ' +
+      'your own work before committing to it: verify_compare scores two ' +
+      'candidates against evaluation criteria (expected score over the ' +
+      "verifier's logprob distribution); verify_select picks the best of N " +
+      'candidates with a Probabilistic Pivot Tournament (O(Nk) comparisons, ' +
+      'cheaper than a full round-robin); verify_track scores your progress ' +
+      'after each step.',
+  })
+
+  if (cfg.compare ?? true) {
+    ctx.tools.register(defineTool({
+      name: 'verify_compare',
+      description:
+        'Score two candidate solutions/trajectories against evaluation criteria with a fine-grained reward model: the verifier distribution over a 20-letter scale is read at the score-tag logprobs and normalized to [0,1]. Returns (scoreA, scoreB) plus token usage.',
+      parameters: {
+        problem: { type: 'string', required: true, description: 'The task description both candidates attempt to solve.' },
+        candidateA: { type: 'string', required: true, description: 'First candidate (code, plan, or agent trajectory).' },
+        candidateB: { type: 'string', required: true, description: 'Second candidate.' },
+        criteria: { type: 'object', additionalProperties: true, required: true, description: 'Evaluation criteria as a {name: description} map, e.g. {"Correctness": "Does the code actually reverse the string?"}.' },
+        nEvaluations: { type: 'integer', description: 'Repeated verifications per criterion to average. Defaults to 1.' },
+        groundTruthNote: { type: 'string', description: 'Optional note the verifier always sees (e.g. reference patch location).' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            scoreA: { type: 'number', required: true },
+            scoreB: { type: 'number', required: true },
+            criteria: { type: 'array', required: true, items: { type: 'string' } },
+            usage: { type: 'json', required: true },
+          },
+        },
+        render: (args, value) => {
+          const v = value as { scoreA: number; scoreB: number; criteria: string[]; usage?: JsonValue }
+          const winner = v.scoreA >= v.scoreB ? 'candidate A' : 'candidate B'
+          const margin = Math.abs(v.scoreA - v.scoreB)
+          const usage = typeof v.usage === 'object' && v.usage !== null ? formatUsage(v.usage as unknown as TokenUsageSnapshot) : ''
+          return [{ type: 'text', text: [
+            `Fine-grained rewards on criteria ${(v.criteria ?? []).join(', ')}:`,
+            `  candidate A: ${v.scoreA.toFixed(4)}`,
+            `  candidate B: ${v.scoreB.toFixed(4)}`,
+            `Winner: ${winner} (margin ${margin.toFixed(4)})`,
+            usage,
+          ].filter(Boolean).join('\n') }]
+        },
+      },
+      timeoutMs: 120_000,
+      isConcurrencySafe: () => true,
+      async execute(args, exec) {
+        const backend = await backendFor()
+        const verifier = new Verifier(backend.config)
+        const result = await verifier.compare(args.problem, args.candidateA, args.candidateB, args.criteria as Record<string, string>, {
+          nEvaluations: args.nEvaluations ?? 1,
+          groundTruthNote: args.groundTruthNote,
+          signal: exec.signal,
+        })
+        return { scoreA: result.scoreA, scoreB: result.scoreB, criteria: result.criteria, usage: result.usage as unknown as JsonValue }
+      },
+    }))
+  }
+
+  if (cfg.select ?? true) {
+    ctx.tools.register(defineTool({
+      name: 'verify_select',
+      description:
+        'Select the best of N candidate solutions/trajectories with a Probabilistic Pivot Tournament: a seeded ring pass plus pivot rounds aggregate pairwise fine-grained rewards into per-candidate preferences. Runs O(Nk) verifier comparisons instead of O(N^2); identical inputs with the same seed run the identical tournament.',
+      parameters: {
+        problem: { type: 'string', required: true, description: 'The task description every candidate attempts to solve.' },
+        candidates: { type: 'array', required: true, items: { type: 'string' }, description: 'List of N candidate solutions/trajectories to rank.' },
+        criteria: { type: 'object', additionalProperties: true, required: true, description: 'Evaluation criteria as a {name: description} map. Each criterion is scored separately and averaged.' },
+        nEvaluations: { type: 'integer', description: 'Repeated verifications per criterion per comparison. Defaults to 4.' },
+        pivots: { type: 'integer', description: 'Number of pivots k. Cost grows as O(Nk); more pivots = more accurate. Defaults to 2.' },
+        seed: { type: 'integer', description: 'Seed for the random ring pass. Defaults to 0.' },
+        groundTruthNote: { type: 'string', description: 'Optional note the verifier always sees.' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            index: { type: 'integer', required: true },
+            best: { type: 'string', required: true },
+            scores: { type: 'array', required: true, items: { type: 'number' } },
+            ranking: { type: 'array', required: true, items: { type: 'integer' } },
+            nComparisons: { type: 'integer', required: true },
+            criteria: { type: 'array', required: true, items: { type: 'string' } },
+            usage: { type: 'json', required: true },
+          },
+        },
+        render: (args, value) => {
+          const v = value as { index: number; scores: number[]; ranking: number[]; nComparisons: number; usage?: JsonValue }
+          const ranking = (v.ranking ?? []).map((index, rank) => `  ${rank + 1}. candidate ${index}: ${(v.scores?.[index] ?? 0).toFixed(4)}`).join('\n')
+          const usage = typeof v.usage === 'object' && v.usage !== null ? formatUsage(v.usage as unknown as TokenUsageSnapshot) : ''
+          return [{ type: 'text', text: [
+            `Best candidate: ${v.index} (${v.nComparisons ?? 0} directed comparisons)`,
+            'Ranking:',
+            ranking,
+            usage,
+          ].filter(Boolean).join('\n') }]
+        },
+      },
+      timeoutMs: 360_000,
+      isConcurrencySafe: () => true,
+      async execute(args, exec) {
+        const backend = await backendFor()
+        const verifier = new Verifier(backend.config)
+        const result = await verifier.select(args.problem, args.candidates, args.criteria as Record<string, string>, {
+          nEvaluations: args.nEvaluations ?? 4,
+          pivots: args.pivots ?? 2,
+          seed: args.seed ?? 0,
+          groundTruthNote: args.groundTruthNote,
+          signal: exec.signal,
+        })
+        return {
+          index: result.index,
+          best: result.best,
+          scores: result.scores,
+          ranking: result.ranking,
+          nComparisons: result.nComparisons,
+          criteria: result.criteria,
+          usage: result.usage as unknown as JsonValue,
+        }
+      },
+    }))
+  }
+
+  if (cfg.track ?? true) {
+    ctx.tools.register(defineTool({
+      name: 'verify_track',
+      description:
+        'Score an agent trajectory\'s progress after each checkpoint step: a skeptical verifier judges whether the state after each step already satisfies the task\'s hidden grader, decoded from the logprob expectation over the A(0%)..T(100%) scale. One call scores all checkpoints; repeated evaluations are averaged.',
+      parameters: {
+        problem: { type: 'string', required: true, description: 'The task instruction the trajectory attempts.' },
+        steps: { type: 'array', required: true, items: { type: 'string' }, description: 'The agent\'s steps, one string per step (action + observed output).' },
+        checkpoints: { type: 'array', items: { type: 'integer' }, description: '1-indexed step numbers to score. Defaults to the interior steps 2..T-1.' },
+        nEvaluations: { type: 'integer', description: 'Independent repeats to average. Defaults to 1.' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            steps: { type: 'array', required: true, items: { type: 'integer' } },
+            scores: { type: 'array', required: true, items: { type: 'number' } },
+            final: { type: 'number', required: true },
+            usage: { type: 'json', required: true },
+          },
+        },
+        render: (args, value) => {
+          const v = value as { steps: number[]; scores: number[]; final: number; usage?: JsonValue }
+          const curve = (v.steps ?? []).map((step, i) => `  after step ${step}: ${(v.scores?.[i] ?? 0).toFixed(4)}`).join('\n')
+          const usage = typeof v.usage === 'object' && v.usage !== null ? formatUsage(v.usage as unknown as TokenUsageSnapshot) : ''
+          return [{ type: 'text', text: [
+            `Progress curve (final ${(v.final ?? 0).toFixed(4)}):`,
+            curve,
+            usage,
+          ].filter(Boolean).join('\n') }]
+        },
+      },
+      timeoutMs: 180_000,
+      isConcurrencySafe: () => true,
+      async execute(args, exec) {
+        const backend = await backendFor()
+        const verifier = new Verifier(backend.config)
+        const result = await verifier.track(args.problem, args.steps, {
+          checkpoints: args.checkpoints,
+          nEvaluations: args.nEvaluations ?? 1,
+          signal: exec.signal,
+        })
+        return {
+          steps: result.steps,
+          scores: result.scores,
+          final: result.final,
+          usage: result.usage as unknown as JsonValue,
+        }
+      },
+    }))
+  }
+
+  // ── Best-of-N mode face ──────────────────────────────────────────────────
+  const summariesBySession = new Map<string, BoNTurnSummary[]>()
+
+  const currentTurnOf = (sessionId: string): number => {
+    const sessions = ctx.get('sessions')
+    const session = sessions?.get(sessionId as never)
+    const events = (session as { events?: readonly { type?: string; data?: { turn?: number } }[] } | undefined)?.events
+    if (!events) return 0
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i]
+      if (event?.type === 'turn/start' && typeof event.data?.turn === 'number') return event.data.turn
+    }
+    return 0
+  }
+
+  // Client RPC (available in the dynamic-plugin runner; a regular
+  // profile/filesystem plugin loads without it — CLI diagnostic covers that case).
+  const harness = (globalThis as { harness?: { handle(method: string, handler: (args: any) => unknown): () => void } }).harness
+  if (harness !== undefined) {
+    harness.handle('verifier-pro.bo-n.summaries', (args: { sessionId?: string }) => {
+      const sessionId = args?.sessionId
+      if (!sessionId) return []
+      return (summariesBySession.get(sessionId) ?? []).map(summary => ({
+        turn: summary.turn,
+        task: summary.task,
+        ranking: summary.ranking.map(entry => ({ index: entry.index, score: entry.score, normalized: entry.normalized })),
+        winnerIndex: summary.winnerIndex,
+        winnerScore: summary.winnerScore,
+        runnerUpScore: summary.runnerUpScore,
+        reason: summary.reason,
+      }))
+    })
+  }
+
+  ctx.on('llm/stream', (options: GenerateOptions, next: () => AsyncIterable<StreamChunk>) => {
+    if (isInternalRequest(options as object)) return next()
+    // Main-conversation filter: auxiliary model calls (session titles, …)
+    // carry a `purpose`; ordinary conversation requests leave it unset.
+    if ((options as { purpose?: unknown }).purpose !== undefined) return next()
+    const sessionId = (options as { sessionId?: string }).sessionId
+    if (sessionId === undefined) return next()
+    // Three-state gating (settings global → session preset → config default), fail-open.
+    return (async function* boNTurn(): AsyncGenerator<StreamChunk> {
+      const decision = resolveBoNMode(ctx, cfg, sessionId, sectionReader)
+      if (!decision.enabled) {
+        yield* next()
+        return
+      }
+      console.error(`[bo-n] mode: ${decision.source} (n=${String(decision.nCandidates)})`)
+      let backend: VerifierBackend
+      try {
+        backend = await resolveBackend(ctx, cfg, options, sectionReader)
+      } catch (error) {
+        console.error(`[bo-n] verifier config unavailable, degrading to normal answer: ${error instanceof Error ? error.message : String(error)}`)
+        yield* next()
+        return
+      }
+      const boNConfig: BoNConfig = {
+        nCandidates: decision.nCandidates,
+        samplingTemperature: cfg.samplingTemperature ?? 0.7,
+        timeoutMs: cfg.timeoutMsBoN ?? 120_000,
+        verifyTimeoutMs: sectionReader().verifyTimeoutMs ?? cfg.verifyTimeoutMsBoN ?? 90_000,
+        showFooter: cfg.showFooter ?? true,
+        criteria: sectionReader().criteria?.length ? sectionReader().criteria : cfg.criteria,
+        pivots: cfg.boNPivots ?? 2,
+        seed: cfg.boNSeed ?? 0,
+      }
+      yield* orchestrate(
+        {
+          stream: request => ctx.llm.stream(request),
+          backend,
+          verifierModel: backend.config.model,
+          onTurnSummary: (summary) => {
+            const list = summariesBySession.get(sessionId) ?? []
+            list.push({ ...summary, turn: currentTurnOf(sessionId) })
+            summariesBySession.set(sessionId, list)
+          },
+        },
+        boNConfig,
+        options,
+        next,
+      )
+    })()
+  }, { global: true })
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    verifierPro: VerifierService
+  }
+}

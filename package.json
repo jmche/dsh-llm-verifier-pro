@@ -1,0 +1,101 @@
+{
+  "name": "dsh-llm-verifier-pro",
+  "version": "0.1.0",
+  "description": "LLM-as-a-Verifier for DeepSeek Harness (unified): fine-grained reward tools (verify_compare / verify_select / verify_track) with Probabilistic Pivot Tournament and vLLM/SGLang prefill, PLUS the Best-of-N conversation mode with a Web settings panel. Merged from dsh-llm-as-a-verifier (TaurenMountain) and @aispin/plugin-verifier (Aispin).",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./scoring": {
+      "types": "./lib/scoring.d.ts",
+      "default": "./lib/scoring.js"
+    },
+    "./tournament": {
+      "types": "./lib/tournament.d.ts",
+      "default": "./lib/tournament.js"
+    },
+    "./progress": {
+      "types": "./lib/progress.d.ts",
+      "default": "./lib/progress.js"
+    },
+    "./backend": {
+      "types": "./lib/backend.d.ts",
+      "default": "./lib/backend.js"
+    },
+    "./bon": {
+      "types": "./lib/bon.d.ts",
+      "default": "./lib/bon.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "docs",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/example/dsh-llm-verifier-pro.git"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "llm-verifier",
+    "llm-as-a-verifier",
+    "verification",
+    "reward-model",
+    "best-of-n",
+    "best-of-5",
+    "test-time-scaling",
+    "cordis"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-client.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm run test"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-system-prompt": ">=0.1.0-rc.6 <0.2.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6 <0.2.0",
+    "@deepseek-ai/schemastery": "^3.18.0",
+    "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.6 <0.2.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-system-prompt": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-llm": "0.1.1-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/dsh-credentials": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-settings": "0.1.1-rc.2",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "react": "^18.3.1"
+  }
+}

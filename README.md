@@ -1,0 +1,79 @@
+# dsh-llm-verifier-pro
+
+LLM-as-a-Verifier for DeepSeek Harness — one plugin that unifies the best of
+two independent implementations:
+
+- **`dsh-llm-as-a-verifier`** (TaurenMountain, MIT) — the engineering core:
+  fine-grained logprob scoring, Probabilistic Pivot Tournament, vLLM/SGLang
+  score-tag prefill, concurrency + timeout + cancellation + token accounting.
+- **`@aispin/plugin-verifier`** (Aispin, MIT) — the product surface: the
+  *Best-of-N conversation mode* (every assistant turn sampled N ways, only the
+  winner replayed) plus a Web settings panel with three-state gating.
+
+Method: the LLM-as-a-Verifier paper — fine-grained reward as the expectation
+over the verifier's top-20 logprob distribution at the score position
+(arXiv:2607.05391).
+
+## Three faces
+
+### 1. Tools (agent calls them on demand)
+
+- `verify_compare` — fine-grained rewards (R_A, R_B) ∈ [0, 1] for one directed
+  pairwise comparison under your criteria.
+- `verify_select` — Probabilistic Pivot Tournament best-of-N selection:
+  O(N·k) verifier comparisons instead of O(N²), seeded and reproducible.
+- `verify_track` — per-step progress curve (A = 0% … T = 100%) over your
+  trajectory, decoded from the logprob expectation.
+
+### 2. Service (`ctx.verifier`)
+
+`ctx.verifier.verify / compare / select / track` for code consumers.
+
+### 3. Mode (Best-of-N conversation mode)
+
+When enabled, every assistant turn of the session is sampled N ways and only
+the winning response is replayed to you. Three-state gating:
+
+| Layer | Switch |
+|---|---|
+| Settings global (Web UI panel) | `boN: true` |
+| Session preset | `agentPreset` ∈ `boNPresetIds` (default `['bo-n']`) |
+| Config default | `boN: true` in the plugin config |
+
+Every failed path fails **open**: a sampling overrun degrades Bo5 → Bo-K →
+a normal answer, with a muted footer explaining what happened. Never a dead
+turn.
+
+## Verifier endpoint (your credentials)
+
+Resolution order: plugin config → the `verifier` settings section →
+the dsh credentials seam (`credential:<name>` / provider env) →
+`OPENAI_BASE_URL` / `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` → `api.deepseek.com`.
+
+Any OpenAI-compatible server with token-level logprobs works (vLLM, SGLang,
+OpenAI, DeepSeek). Non-DeepSeek servers get the optional vLLM/SGLang prefill
+pass so score tags land exactly at the label position.
+
+```yaml
+# ~/.dsh/profiles/<profile>/cordis.patch.yml
+- id: llm-verifier-pro
+  config:
+    baseUrl: https://your-gateway/v1
+    apiKey: credential:YOUR_API_KEY_ENV
+    model: opencode-go/deepseek-v4-flash
+    boN: false          # Web panel / preset switches it on per session
+    boNCandidates: 5
+    showFooter: true
+```
+
+## Development
+
+```bash
+npm install
+npm run check      # typecheck + tests (79 tests)
+npm run build      # tsc + copy client.js
+```
+
+## License
+
+MIT. Implementation ports from the two upstreams above, both MIT.
