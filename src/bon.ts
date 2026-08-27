@@ -369,8 +369,14 @@ export async function* orchestrate(
   const mixed = config.mixModels ?? []
   const sampled = Array.from({ length: extra }, (_slot, i) => {
     const entry = mixed[i]
+    // Sampling candidates must not inherit the main turn's reasoningEffort:
+    // a candidate model may not declare that effort (e.g. local ollama models
+    // don't support 'high'), which makes dsh-llm reject the whole slot during
+    // call validation. Dropping it lets each candidate use its own default.
+    const base = { ...options }
+    delete base.reasoningEffort
     const request: GenerateOptions = {
-      ...options,
+      ...base,
       temperature: config.samplingTemperature,
       ...(typeof entry === 'string' || typeof entry === 'undefined'
         ? (entry !== undefined && entry.length > 0 ? { model: entry } : {})

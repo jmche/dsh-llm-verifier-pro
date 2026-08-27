@@ -29,22 +29,33 @@ const options = {
   messages: [{ role: 'user' as const, content: 'hi' }],
   model: 'm',
   provider: 'omni-chat',
+  reasoningEffort: 'high', // the main turn's effort must NOT leak into sampled candidates
 } as never as GenerateOptions
 
 async function run(mode: 'parallel' | 'serial') {
   const startTimes: number[] = []
-  const stream = vi.fn(() => {
+  const receivedOptions: Array<Record<string, unknown>> = []
+  const stream = vi.fn((opts: GenerateOptions) => {
     startTimes.push(Date.now())
+    receivedOptions.push(opts as unknown as Record<string, unknown>)
     return unusable(30)
   })
   const backend = new VerifierBackend({ baseUrl: 'http://127.0.0.1:1/v1', apiKey: 'x', prefill: false })
   const deps: OrchestrateDeps = { stream, backend, onTurnSummary: vi.fn() }
   const out: StreamChunk[] = []
   for await (const chunk of orchestrate(deps, baseConfig(mode), options, () => unusable(0))) out.push(chunk)
-  return { startTimes, out }
+  return { startTimes, out, receivedOptions }
 }
 
 describe('orchestrate sampling schedule', () => {
+  it('sampled candidates never inherit the main turn reasoningEffort', async () => {
+    const { receivedOptions } = await run('parallel')
+    expect(receivedOptions.length).toBe(4)
+    for (const opt of receivedOptions) {
+      expect(opt.reasoningEffort).toBeUndefined()
+    }
+  })
+
   it('serial: waits for each rollout to settle before starting the next', async () => {
     const { startTimes } = await run('serial')
     expect(startTimes.length).toBe(4) // N-1 = 4 sampled slots
