@@ -125,7 +125,7 @@ describe('VerifierBackend.chat', () => {
     expect(mock.requests[1]!.body.extra_body).toBeUndefined()
   })
 
-  it('truncates the analysis at the first score tag and prefills the letters', async () => {
+  it('skips prefill when the main response already carries a scoreable tag + logprobs', async () => {
     mock = await createMockOpenAI()
     mock.setResponses([
       completion('<score_A> G </score_A>\n<score_B> T </score_B>', ['<score_A>', 'G', '<score_B>', 'T'], [
@@ -134,21 +134,12 @@ describe('VerifierBackend.chat', () => {
         { token: '<score_B>', logprob: 0 },
         { token: 'T', logprob: 0, top_logprobs: [{ token: 'T', logprob: log(1) }] },
       ]),
-      {
-        choices: [{ message: { content: 'G' }, logprobs: { content: [{ token: 'G', logprob: 0, top_logprobs: [{ token: 'G', logprob: 0 }] }] } }],
-        usage: { prompt_tokens: 1, completion_tokens: 1 },
-      },
-      {
-        choices: [{ message: { content: 'T' }, logprobs: { content: [{ token: 'T', logprob: 0, top_logprobs: [{ token: 'T', logprob: 0 }] }] } }],
-        usage: { prompt_tokens: 1, completion_tokens: 1 },
-      },
     ])
     const backend = new VerifierBackend({ baseUrl: mock.baseUrl, apiKey: 'k', model: 'm' })
     const out = await backend.chat('...<score_A>...<score_B>...')
-    expect(out.tokens).toEqual(['\n<score_A>', 'G', '</score_A>', '\n<score_B>', 'T', '</score_B>'])
-    expect(mock.requests).toHaveLength(3)
-    // The analysis was truncated before the first tag.
-    expect(mock.requests[1]!.body.messages.at(-1).content).toBe('\n<score_A>')
+    // Scoreable in the main response: no prefill call, tokens stay verbatim.
+    expect(out.tokens).toEqual(['<score_A>', 'G', '<score_B>', 'T'])
+    expect(mock.requests).toHaveLength(1)
   })
 
   it('runs the prefill pass per missing tag and reconstructs the tag tokens', async () => {

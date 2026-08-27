@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { Context } from '@deepseek-ai/cordis'
 import { apply, name, inject, resolveBoNMode, resolveBackend } from '../src/index'
-import { createMockOpenAI, pairwiseCompletion, type MockOpenAIServer } from './helpers/mock-openai'
+import { completion, createMockOpenAI, pairwiseCompletion, type MockOpenAIServer } from './helpers/mock-openai'
 import { verifyBest } from '../src/bon'
 import { VerifierBackend } from '../src/backend'
 
@@ -190,5 +190,32 @@ describe('resolveBackend (zero-config inheritance)', () => {
     const backend = await resolveBackend(ctx, {}, undefined, () => ({ baseURL: 'https://omni.example/v1', apiKey: 'credential:OMNI_CHAT_API_KEY' }))
     expect(backend.config.baseUrl).toBe('https://omni.example/v1')
     expect(backend.config.apiKey).toBe('seam-key')
+  })
+})
+describe('prefill gating (main response usable -> skip)', () => {
+  it('skips prefill when the main response already carries a scoreable tag + logprobs', async () => {
+    mock = await createMockOpenAI()
+    mock.setResponses([scoreLetter('A')])
+    const backend = new VerifierBackend({ baseUrl: mock.baseUrl, apiKey: 'test-key', prefill: true })
+    await backend.chat('task with <score_A> and <score_B>')
+    const chatCalls = mock.requests.filter((r) => r.path === '/v1/chat/completions').length
+    expect(chatCalls).toBe(1)
+  })
+
+  it('prefills only when the main response lacks scoreable content', async () => {
+    mock = await createMockOpenAI()
+    mock.setResponses([
+      // main response: open model that omitted the score tags
+      { choices: [{ message: { role: 'assistant', content: 'reasoning only, no tags' }, finish_reason: 'stop' }] },
+      // prefill response per tag: constrained letter distributions
+      completion('K', ['K'], [{ token: 'K', logprob: 0, top_logprobs: [{ token: 'K', logprob: 0 }] }]),
+      completion('L', ['L'], [{ token: 'L', logprob: 0, top_logprobs: [{ token: 'L', logprob: 0 }] }]),
+    ])
+    const backend = new VerifierBackend({ baseUrl: mock.baseUrl, apiKey: 'test-key', prefill: true })
+    const out = await backend.chat('task with <score_A> and <score_B>')
+    // main call + one prefill per score tag (<score_A>, <score_B>)
+    const chatCalls = mock.requests.filter((r) => r.path === '/v1/chat/completions').length
+    expect(chatCalls).toBe(3)
+    expect(out.text).toContain('<score_A>')
   })
 })

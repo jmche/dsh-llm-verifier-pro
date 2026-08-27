@@ -167,6 +167,7 @@ export class VerifierBackend {
    * has been parsed.
    */
   lastGradingMode: 'logprob' | 'sampling' | undefined
+  private prefillFailureNoticed = false
 
   constructor(config: BackendConfig = {}) {
     this.config = VerifierBackend.resolveConfig(config)
@@ -314,10 +315,24 @@ export class VerifierBackend {
         this.usage.record(response)
         const choice = (response.choices as Array<Record<string, unknown>> | undefined)?.[0]
         const message = (choice?.message ?? {}) as Record<string, unknown>
+        // The score letter may arrive in any model-specific slot: `content`
+        // (plain text), `reasoning` (vLLM), `reasoning_content` (DeepSeek-style
+        // OpenAI-compatible), or a content ARRAY of text blocks (ChatML). Read
+        // them defensively — never crash on an unfamiliar wire shape, fall back
+        // to the sampled token below.
+        const digest = (value: unknown): string => {
+          if (typeof value === 'string') return value
+          if (Array.isArray(value)) return value.map(digest).join('')
+          if (value !== null && typeof value === 'object') {
+            const block = value as { text?: unknown; content?: unknown }
+            return digest(block.text ?? block.content)
+          }
+          return ''
+        }
         const letter = String(
-          message.content ??
-            message.reasoning ??
-            message.reasoning_content ??
+          digest(message.content) ||
+            digest(message.reasoning) ||
+            digest(message.reasoning_content) ||
             '',
         ).trim()
         const logprobs = (choice?.logprobs ?? {}) as { content?: Array<Record<string, unknown>> }
@@ -337,9 +352,19 @@ export class VerifierBackend {
           alts.length > 0 ? alts : [{ token: resolvedLetter, logprob: 0 }],
           [{ token: closing, logprob: 0 }],
         )
-      } catch {
-        // A server without prefill support returns the tag-less analysis
-        // (scores fall back to 0.5 downstream).
+      } catch (error) {
+        // A server without prefill support (or a thinking-mode endpoint that
+        // rejects the synthetic assistant turn, e.g. DeepSeek's
+        // "reasoning_content must be passed back") returns the tag-less
+        // analysis — scores fall back to point estimates below. Warn once so
+        // the degradation is discoverable, not silent.
+        if (!this.prefillFailureNoticed) {
+          this.prefillFailureNoticed = true
+          console.error(
+            `[verifier] prefill rejected by the endpoint (${error instanceof Error ? error.message : String(error)}); ` +
+              'scores fall back to point estimates',
+          )
+        }
         return {
           text: analysis,
           ...(tokens.length > 0 ? { tokens } : {}),
@@ -407,7 +432,19 @@ export class VerifierBackend {
     }
 
     const tags = ['<score_A>', '<score_B>'].filter((tag) => prompt.includes(tag))
-    if (tags.length > 0 && !this.config.deepseek && this.config.prefill) {
+    // Only prefill when the MAIN response cannot already carry a usable score
+    // (no score tag in the text / no per-position logprobs). A main reply
+    // that contains the tags plus logprobs is scored directly — prefill is
+    // only for open models that omit the tags. This also avoids the extra
+    // multi-turn assistant call that DeepSeek-style thinking endpoints reject
+    // with "reasoning_content in the thinking mode must be passed back".
+    const mainScoreUsable =
+      tags.length > 0 &&
+      tokens !== undefined &&
+      positionLogprobs !== undefined &&
+      tokens.join('').includes('<score_A>') &&
+      positionLogprobs.length > 0
+    if (tags.length > 0 && !this.config.deepseek && this.config.prefill && !mainScoreUsable) {
       const idx = Math.min(...tags.map((tag) => text.indexOf(tag)).filter((i) => i >= 0), text.length)
       const analysis = text.slice(0, idx).trimEnd()
       const prefilled = await this.prefillTags(model, messages, analysis, tags)

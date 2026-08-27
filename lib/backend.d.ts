@@ -89,6 +89,7 @@ export declare class VerifierBackend {
      * has been parsed.
      */
     lastGradingMode: 'logprob' | 'sampling' | undefined;
+    private prefillFailureNoticed;
     constructor(config?: BackendConfig);
     /** Merge explicit config with the process environment (upstream `create_client` order). */
     static resolveConfig(config: BackendConfig): ResolvedBackendConfig;
