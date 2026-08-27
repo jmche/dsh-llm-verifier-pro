@@ -42,9 +42,8 @@ Override the bundle defaults in the profile's `cordis.patch.yml`:
     select: true
     track: true
     # ── Best-of-N conversation mode ──
-    boN: false              # Deployment-level default switch (Web panel / session preset can enable)
+    boN: false              # master switch — the Web panel or this line turns it on; an explicit Off wins over everything
     boNCandidates: 5        # Candidates sampled per assistant turn
-    boNPresetIds: ['bo-n']  # Session presets that opt the session into the mode
     samplingTemperature: 0.7
     timeoutMsBoN: 120000        # Sampling-phase budget (independent of the verify phase)
     verifyTimeoutMsBoN: 90000   # Verify-phase budget
@@ -74,14 +73,14 @@ ctx.verifierPro.track(problem, steps)
 
 ### 3. Mode (Best-of-N conversation mode)
 
-When enabled, **every assistant turn** of the session is sampled N ways and
-only the winner is replayed to you. Three-state gating:
+When enabled, **every assistant turn** is sampled N ways and only the winner
+is replayed to you. The decision is re-evaluated per turn and is **all-or-
+nothing — it covers every conversation; there is no per-session tier**:
 
 | Layer | Switch |
 |---|---|
-| Settings global (Web UI panel) | `verifier-pro.boN: true` |
-| Session preset | session `agentPreset` ∈ `boNPresetIds` (default `['bo-n']`) |
-| Config default | `config.boN: true` |
+| Settings (Web UI panel) | `verifier-pro.boN: true` — an explicit `false` is the master kill-switch and overrides the config default |
+| Config default | `config.boN: true` (only when the section is unset) |
 
 Every failure path fails **open**: a sampling overrun degrades Bo-N → Bo-K →
 a normal answer, with an explanatory footer under the answer. Never a dead
@@ -100,14 +99,16 @@ DEEPSEEK_API_KEY (implies api.deepseek.com)
 The plugin ships a browser-side settings panel (`src/client.js`) registered as
 the `verifier-pro` settings section (slot id `verifier-pro`, title
 "Best-of-N"). It can control:
-- the global Best-of-N switch
-- the global candidate count
-- the session-preset candidate count
+- a live **Current effect** banner stating what the settings do right now
+  (`Best-of-N is ON for every conversation · 5-way` / `... is OFF`)
+- the master switch plus candidate count: Off (master kill-switch),
+  3-way, 5-way, Custom (2–8)
 - the verify-phase timeout
-- extra grading criteria
 - the candidate model mix (`provider/model` lines; the first `/` splits the
   provider from the model id — a model id containing `/` must include its real
   provider, only a `/`-free id can ride the conversation's provider)
+- `autoDegrade`: fall back to sampling scoring when the endpoint lacks
+  logprobs (ON) or fail loudly in strict mode (OFF)
 
 ## Development
 

@@ -71,29 +71,71 @@ describe('plugin shape (merged)', () => {
   })
 })
 
-describe('resolveBoNMode (three-state gating)', () => {
-  const ctx = { get: vi.fn(() => undefined) } as never
-
+describe('resolveBoNMode (settings global → config default → off)', () => {
   it('is off by default', () => {
-    const decision = resolveBoNMode(ctx, {}, undefined, () => ({}))
-    expect(decision).toEqual({ enabled: false, nCandidates: 0, source: 'off' })
+    expect(resolveBoNMode({}, () => ({}))).toEqual({ enabled: false, nCandidates: 0, source: 'off' })
   })
 
-  it('settings-global switch wins', () => {
-    const decision = resolveBoNMode(ctx, { boN: false }, undefined, () => ({ boN: true, boNCandidates: 3 }))
+  it('the settings switch wins over the config default', () => {
+    const decision = resolveBoNMode({ boN: true, boNCandidates: 5 }, () => ({ boN: true, boNCandidates: 3 }))
     expect(decision).toEqual({ enabled: true, nCandidates: 3, source: 'settings-global' })
   })
 
-  it('config default applies when no session preset matches', () => {
-    const decision = resolveBoNMode(ctx, { boN: true, boNCandidates: 5 }, 's1', () => ({}))
+  it('an explicit settings Off is the master kill-switch', () => {
+    const decision = resolveBoNMode({ boN: true }, () => ({ boN: false }))
+    expect(decision.source).toBe('off')
+    expect(decision.enabled).toBe(false)
+  })
+
+  it('the config default applies when the switch is unset', () => {
+    const decision = resolveBoNMode({ boN: true, boNCandidates: 5 }, () => ({}))
     expect(decision.source).toBe('config-default')
     expect(decision.enabled).toBe(true)
     expect(decision.nCandidates).toBe(5)
   })
 
-  it('explicit settings false beats config default', () => {
-    const decision = resolveBoNMode(ctx, { boN: true }, undefined, () => ({ boN: false }))
-    expect(decision.source).toBe('off')
+  it('an unset switch falls back to the section candidate count over the config', () => {
+    const decision = resolveBoNMode({ boNCandidates: 5 }, () => ({ boN: true, boNCandidates: 4 }))
+    expect(decision).toEqual({ enabled: true, nCandidates: 4, source: 'settings-global' })
+  })
+})
+
+describe('VerifierBackend autoDegrade', () => {
+  const noLogprobsCompletion = (content: string): Record<string, unknown> => ({
+    choices: [
+      { message: { role: 'assistant', content }, finish_reason: 'stop' },
+    ],
+    usage: {
+      prompt_tokens: 10,
+      completion_tokens: 5,
+      prompt_tokens_details: { cached_tokens: 0 },
+      completion_tokens_details: { reasoning_tokens: 0 },
+    },
+  })
+
+  it('falls back to sampling scoring (default) when the endpoint has no logprobs', async () => {
+    mock = await createMockOpenAI()
+    mock.setResponses([noLogprobsCompletion('<score_A> K </score_A>\n<score_B> L </score_B>')])
+    const backend = new VerifierBackend({ baseUrl: mock.baseUrl, apiKey: 'test-key', prefill: false })
+    const out = await backend.chat('task with <score_A> and <score_B>')
+    expect(backend.lastGradingMode).toBe('sampling')
+    expect(out.text).toContain('<score_A>')
+  })
+
+  it('strict mode raises when the endpoint has no logprobs', async () => {
+    mock = await createMockOpenAI()
+    mock.setResponses([noLogprobsCompletion('<score_A> K </score_A>')])
+    const backend = new VerifierBackend({ baseUrl: mock.baseUrl, apiKey: 'test-key', prefill: false, autoDegrade: false })
+    await expect(backend.chat('task with <score_A> and <score_B>')).rejects.toThrow(/autoDegrade/i)
+    expect(backend.lastGradingMode).toBeUndefined()
+  })
+
+  it('records logprob grading when the endpoint provides logprobs', async () => {
+    mock = await createMockOpenAI()
+    mock.setResponses([scoreLetter('A')])
+    const backend = new VerifierBackend({ baseUrl: mock.baseUrl, apiKey: 'test-key', prefill: false })
+    await backend.chat('task with <score_A> and <score_B>')
+    expect(backend.lastGradingMode).toBe('logprob')
   })
 })
 

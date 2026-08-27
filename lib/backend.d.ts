@@ -57,6 +57,12 @@ export interface BackendConfig {
     deepseek?: boolean;
     /** Run the vLLM/SGLang prefill pass for score tags on non-DeepSeek servers. Defaults to true. */
     prefill?: boolean;
+    /**
+     * When the endpoint returns no token-level logprobs: `true` (default) falls
+     * back to sampling-style (point-mass) scoring; `false` is strict mode and
+     * raises instead of silently downgrading the method's granularity.
+     */
+    autoDegrade?: boolean;
 }
 export interface ResolvedBackendConfig {
     model?: string;
@@ -66,6 +72,7 @@ export interface ResolvedBackendConfig {
     maxConcurrency: number;
     deepseek: boolean;
     prefill: boolean;
+    autoDegrade: boolean;
 }
 export interface ChatOptions {
     model?: string;
@@ -75,6 +82,13 @@ export declare class VerifierBackend {
     readonly config: ResolvedBackendConfig;
     readonly usage: TokenUsage;
     private resolvedModel;
+    /**
+     * How the last main verifier request was graded: `'logprob'` when the
+     * endpoint supplied token-level logprobs, `'sampling'` after a fallback to
+     * point-mass (sampling-style) scoring, `undefined` before any main request
+     * has been parsed.
+     */
+    lastGradingMode: 'logprob' | 'sampling' | undefined;
     constructor(config?: BackendConfig);
     /** Merge explicit config with the process environment (upstream `create_client` order). */
     static resolveConfig(config: BackendConfig): ResolvedBackendConfig;

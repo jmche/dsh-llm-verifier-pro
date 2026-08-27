@@ -119,6 +119,12 @@ export interface BackendConfig {
   deepseek?: boolean
   /** Run the vLLM/SGLang prefill pass for score tags on non-DeepSeek servers. Defaults to true. */
   prefill?: boolean
+  /**
+   * When the endpoint returns no token-level logprobs: `true` (default) falls
+   * back to sampling-style (point-mass) scoring; `false` is strict mode and
+   * raises instead of silently downgrading the method's granularity.
+   */
+  autoDegrade?: boolean
 }
 
 export interface ResolvedBackendConfig {
@@ -129,6 +135,7 @@ export interface ResolvedBackendConfig {
   maxConcurrency: number
   deepseek: boolean
   prefill: boolean
+  autoDegrade: boolean
 }
 
 export interface ChatOptions {
@@ -153,6 +160,14 @@ export class VerifierBackend {
   readonly usage = new TokenUsage()
   private resolvedModel: string | undefined
 
+  /**
+   * How the last main verifier request was graded: `'logprob'` when the
+   * endpoint supplied token-level logprobs, `'sampling'` after a fallback to
+   * point-mass (sampling-style) scoring, `undefined` before any main request
+   * has been parsed.
+   */
+  lastGradingMode: 'logprob' | 'sampling' | undefined
+
   constructor(config: BackendConfig = {}) {
     this.config = VerifierBackend.resolveConfig(config)
   }
@@ -175,6 +190,7 @@ export class VerifierBackend {
       maxConcurrency: Math.max(1, config.maxConcurrency ?? 8),
       deepseek,
       prefill: config.prefill ?? true,
+      autoDegrade: config.autoDegrade ?? true,
     }
   }
 
@@ -250,6 +266,7 @@ export class VerifierBackend {
     const logprobs = (choice.logprobs ?? {}) as { content?: Array<Record<string, unknown>> }
     const tokens: string[] = []
     const positionLogprobs: LogprobToken[][] = []
+    this.lastGradingMode = Array.isArray(logprobs.content) && logprobs.content.length > 0 ? 'logprob' : undefined
     if (Array.isArray(logprobs.content)) {
       for (const pos of logprobs.content) {
         const token = typeof pos.token === 'string' ? pos.token : ''
@@ -375,6 +392,19 @@ export class VerifierBackend {
       }
     }
     let { text, tokens, positionLogprobs } = this.parse(response)
+
+    // autoDegrade: a main request without token-level logprobs means grading
+    // can only be sampling-style; `false` is strict mode and refuses to
+    // silently downgrade the method's granularity.
+    if (this.lastGradingMode !== 'logprob') {
+      if (!this.config.autoDegrade) {
+        throw new VerifierError(
+          'verifier backend returned no logprobs and autoDegrade is disabled — ' +
+            'configure a logprobs-capable endpoint or enable autoDegrade',
+        )
+      }
+      this.lastGradingMode = 'sampling'
+    }
 
     const tags = ['<score_A>', '<score_B>'].filter((tag) => prompt.includes(tag))
     if (tags.length > 0 && !this.config.deepseek && this.config.prefill) {

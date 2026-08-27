@@ -59,6 +59,12 @@ export interface Config {
     deepseek?: boolean;
     /** vLLM/SGLang prefill pass for score tags on non-DeepSeek servers. Defaults to true. */
     prefill?: boolean;
+    /**
+     * When the endpoint returns no token-level logprobs: `true` (default) falls
+     * back to sampling-style scoring (footer marks "sampling scoring");
+     * `false` is strict mode and raises instead of silently downgrading.
+     */
+    autoDegrade?: boolean;
     /** Settings namespace whose section supplies baseUrl/apiKey/model — and the Bo-N global switch. */
     settingsNs?: string;
     /** Register `verify_compare`. Defaults to true. */
@@ -71,8 +77,6 @@ export interface Config {
     boN?: boolean;
     /** Candidates per Bo-N turn when active. Defaults to 5. */
     boNCandidates?: number;
-    /** Session agent-preset ids that turn the mode on. Defaults to ['bo-n']. */
-    boNPresetIds?: string[];
     /** Sampling temperature for the diversity rollouts. Defaults to 0.7. */
     samplingTemperature?: number;
     /** Wall-clock budget for the sampling phase. Defaults to 120s. */
@@ -121,8 +125,8 @@ export interface VerifierSettingsSection {
     boN?: boolean;
     /** Global-tier candidates override. */
     boNCandidates?: number;
-    /** Candidates for sessions that selected a Bo-N PRESET — independent from the global tier. */
-    boNPresetCandidates?: number;
+    /** Strict-mode switch: false = raise on endpoints without logprobs. */
+    autoDegrade?: boolean;
     /** Verify-phase wall-clock budget in ms. */
     verifyTimeoutMs?: number;
     /** Extra grading criteria for Bo-N comparison prompts. */
@@ -170,13 +174,19 @@ export declare function resolveBackend(ctx: Context, config: Config, conversatio
 export interface BoNModeDecision {
     readonly enabled: boolean;
     readonly nCandidates: number;
-    readonly source: 'settings-global' | 'session-preset' | 'config-default' | 'off';
+    readonly source: 'settings-global' | 'config-default' | 'off';
 }
 /**
- * The three-state Bo-N gating: settings global → session preset → config
- * default → off. Settings are re-read per turn (hot).
+ * The Bo-N mode decision, evaluated per turn (hot): settings global →
+ * config default → off.
+ *
+ * The panel's explicit switch is the whole story: `boN: true` turns the mode
+ * on for EVERY conversation at the section's candidate count, and an explicit
+ * `boN: false` is the master kill-switch that also overrides the config
+ * default. Only an unset section falls through to the deployment default
+ * (`config.boN`).
  */
-export declare function resolveBoNMode(ctx: Context, config: Config, sessionId: string | undefined, sectionReader?: SettingsSectionReader): BoNModeDecision;
+export declare function resolveBoNMode(config: Config, sectionReader?: SettingsSectionReader): BoNModeDecision;
 /** The `ctx.verifierPro` service (service face). Unique name: the original
  * `verifier` service is already registered by @aispin/plugin-verifier — both
  * plugins coexist in one profile. */

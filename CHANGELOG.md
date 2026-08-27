@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.2.0 (2026-08-27)
+
+Best-of-N settings panel redesigned (v3): one decision, plain English, no
+per-session tier.
+
+### Breaking changes
+- **Session-preset tier removed.** The mode is now all-or-nothing: it covers
+  every conversation or none. `boNPresetIds` / `boNPresetCandidates` config
+  and section fields are deleted; a `bo-n` `agentPreset` stamped on a session
+  no longer has any effect. An explicit **Off** in the panel is the master
+  kill-switch and overrides the config default.
+- `resolveBoNMode(config, sectionReader)` — the `ctx`/`sessionId` args are
+  dropped (no session lookup anymore).
+
+### Features
+- Web panel rewritten (`src/client.js`):
+  - live **Current effect** banner ("Best-of-N is ON for every conversation ·
+    5-way" / "… is OFF"), computed from the settings every render;
+  - master switch as four radio cards: Off / Fast · 3-way / Accurate · 5-way /
+    Custom (2–8);
+  - Advanced settings and a "How do I know it's running?" help section, both
+    folded by default;
+  - model-mix Save now gives momentary "Saved ✓" feedback;
+  - panel copy is English throughout.
+- **autoDegrade wired for real**: when the endpoint returns no token-level
+  logprobs, grading falls back to sampling-style scoring and the turn footer
+  marks "sampling scoring"; with `autoDegrade: false` (strict mode) the
+  backend raises instead of silently downgrading. Configurable from the
+  panel, the settings section, or the plugin config; the backend records
+  `lastGradingMode` for diagnostics.
+
+### Docs
+- README / USER-GUIDE updated: new panel section, gating matrix, and a
+  behavior-change note for `bo-n` session presets.
+
+### Tests
+- 94 passing: `resolveBoNMode` rewritten for the two-layer gating; new
+  `VerifierBackend.autoDegrade` suite (default fallback / strict raise /
+  logprob grading).
+
 ## 0.1.0 (2026-08-26)
 
 Initial release — the unified LLM-as-a-Verifier plugin for DeepSeek Harness,

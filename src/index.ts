@@ -77,6 +77,12 @@ export interface Config {
   deepseek?: boolean
   /** vLLM/SGLang prefill pass for score tags on non-DeepSeek servers. Defaults to true. */
   prefill?: boolean
+  /**
+   * When the endpoint returns no token-level logprobs: `true` (default) falls
+   * back to sampling-style scoring (footer marks "sampling scoring");
+   * `false` is strict mode and raises instead of silently downgrading.
+   */
+  autoDegrade?: boolean
   /** Settings namespace whose section supplies baseUrl/apiKey/model — and the Bo-N global switch. */
   settingsNs?: string
   /** Register `verify_compare`. Defaults to true. */
@@ -90,8 +96,6 @@ export interface Config {
   boN?: boolean
   /** Candidates per Bo-N turn when active. Defaults to 5. */
   boNCandidates?: number
-  /** Session agent-preset ids that turn the mode on. Defaults to ['bo-n']. */
-  boNPresetIds?: string[]
   /** Sampling temperature for the diversity rollouts. Defaults to 0.7. */
   samplingTemperature?: number
   /** Wall-clock budget for the sampling phase. Defaults to 120s. */
@@ -137,13 +141,13 @@ export const Config: z<Config> = z.object({
   maxConcurrency: z.number(),
   deepseek: z.boolean(),
   prefill: z.boolean(),
+  autoDegrade: z.boolean().default(true),
   settingsNs: z.string().default('verifier-pro'),
   compare: z.boolean().default(true),
   select: z.boolean().default(true),
   track: z.boolean().default(true),
   boN: z.boolean().default(false),
   boNCandidates: z.number().default(5),
-  boNPresetIds: z.array(z.string()).default(['bo-n']),
   samplingTemperature: z.number().default(0.7),
   timeoutMsBoN: z.number().default(120_000),
   verifyTimeoutMsBoN: z.number().default(90_000),
@@ -163,8 +167,8 @@ export interface VerifierSettingsSection {
   boN?: boolean
   /** Global-tier candidates override. */
   boNCandidates?: number
-  /** Candidates for sessions that selected a Bo-N PRESET — independent from the global tier. */
-  boNPresetCandidates?: number
+  /** Strict-mode switch: false = raise on endpoints without logprobs. */
+  autoDegrade?: boolean
   /** Verify-phase wall-clock budget in ms. */
   verifyTimeoutMs?: number
   /** Extra grading criteria for Bo-N comparison prompts. */
@@ -180,7 +184,7 @@ const SettingsSectionSchema = z.object({
   model: z.string().default(''),
   boN: z.boolean(),
   boNCandidates: z.number(),
-  boNPresetCandidates: z.number(),
+  autoDegrade: z.boolean(),
   verifyTimeoutMs: z.number(),
   criteria: z.array(z.string()),
   boNModelMix: z.array(z.union([z.string(), z.object({ provider: z.string(), model: z.string() })])).default([]),
@@ -254,6 +258,7 @@ export function sectionReaderOf(ctx: Context, config: Config): SettingsSectionRe
         model: 'model',
         boN: 'boN',
         boNCandidates: 'boNCandidates',
+        autoDegrade: 'autoDegrade',
         verifyTimeoutMs: 'verifyTimeoutMsBoN',
         criteria: 'criteria',
         boNModelMix: 'boNModelMix',
@@ -376,6 +381,7 @@ export async function resolveBackend(
     maxConcurrency: config.maxConcurrency,
     deepseek,
     prefill: config.prefill,
+    autoDegrade: section.autoDegrade ?? config.autoDegrade ?? true,
   }
   return new VerifierBackend(backendConfig)
 }
@@ -384,30 +390,26 @@ export async function resolveBackend(
 export interface BoNModeDecision {
   readonly enabled: boolean
   readonly nCandidates: number
-  readonly source: 'settings-global' | 'session-preset' | 'config-default' | 'off'
+  readonly source: 'settings-global' | 'config-default' | 'off'
 }
 
 /**
- * The three-state Bo-N gating: settings global → session preset → config
- * default → off. Settings are re-read per turn (hot).
+ * The Bo-N mode decision, evaluated per turn (hot): settings global →
+ * config default → off.
+ *
+ * The panel's explicit switch is the whole story: `boN: true` turns the mode
+ * on for EVERY conversation at the section's candidate count, and an explicit
+ * `boN: false` is the master kill-switch that also overrides the config
+ * default. Only an unset section falls through to the deployment default
+ * (`config.boN`).
  */
-export function resolveBoNMode(ctx: Context, config: Config, sessionId: string | undefined, sectionReader: SettingsSectionReader = () => ({})): BoNModeDecision {
+export function resolveBoNMode(config: Config, sectionReader: SettingsSectionReader = () => ({})): BoNModeDecision {
   const section = sectionReader()
-  const globalCandidates = section.boNCandidates ?? config.boNCandidates ?? 5
-  const presetCandidates = section.boNPresetCandidates ?? config.boNCandidates ?? 5
-  // ① Settings global — the Web UI switch. An EXPLICIT false wins over
-  // everything; undefined falls through to per-session and deployment states.
-  if (section.boN === true) return { enabled: true, nCandidates: globalCandidates, source: 'settings-global' }
-  // ② Session preset — the durable agentPreset stamped on the session.
-  if (section.boN !== false && sessionId !== undefined) {
-    const sessions = ctx.get('sessions')
-    const session = sessions?.get(sessionId as never) as { agentPreset?: string } | undefined
-    if (session?.agentPreset !== undefined && (config.boNPresetIds ?? ['bo-n']).includes(session.agentPreset)) {
-      return { enabled: true, nCandidates: presetCandidates, source: 'session-preset' }
-    }
-  }
-  // ③ Config deployment default.
-  if (section.boN !== false && config.boN) return { enabled: true, nCandidates: globalCandidates, source: 'config-default' }
+  const nCandidates = section.boNCandidates ?? config.boNCandidates ?? 5
+  // ① Settings global — the Web UI switch.
+  if (section.boN === true) return { enabled: true, nCandidates, source: 'settings-global' }
+  // ② Config deployment default.
+  if (section.boN !== false && config.boN) return { enabled: true, nCandidates, source: 'config-default' }
   return { enabled: false, nCandidates: 0, source: 'off' }
 }
 
@@ -741,9 +743,9 @@ export function apply(ctx: Context, config: Config): void {
     if ((options as { purpose?: unknown }).purpose !== undefined) return next()
     const sessionId = (options as { sessionId?: string }).sessionId
     if (sessionId === undefined) return next()
-    // Three-state gating (settings global → session preset → config default), fail-open.
+    // Two-state gating (settings global → config default), fail-open.
     return (async function* boNTurn(): AsyncGenerator<StreamChunk> {
-      const decision = resolveBoNMode(ctx, cfg, sessionId, sectionReader)
+      const decision = resolveBoNMode(cfg, sectionReader)
       if (!decision.enabled) {
         yield* next()
         return

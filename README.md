@@ -55,14 +55,20 @@ Full walkthrough: [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md).
 
 ### 3. Mode (Best-of-N conversation mode)
 
-When enabled, every assistant turn of the session is sampled N ways and only
-the winning response is replayed to you. Three-state gating:
+When enabled, every assistant turn is sampled N ways and only the winning
+response is replayed to you. The decision is re-evaluated per turn and is
+deliberately **all-or-nothing — the mode covers every conversation, there is
+no per-session tier**:
 
 | Layer | Switch |
 |---|---|
-| Settings global (Web UI panel) | `boN: true` |
-| Session preset | `agentPreset` ∈ `boNPresetIds` (default `['bo-n']`) |
-| Config default | `boN: true` in the plugin config |
+| Settings (Web UI panel) | `boN: true` / `boN: false` — an explicit **Off** is the master kill-switch and overrides the config default |
+| Config default | `boN: true` in the plugin config (only when the section is unset) |
+
+> **Behavior change:** a `bo-n` session preset in the dsh session UI no longer
+> has any effect — the mode is all-or-nothing. If you previously opted
+> specific sessions in via a preset, enable the mode globally instead (or
+> scope it per profile).
 
 **Model mix (candidate diversity).** Candidate 0 always rides the
 conversation's own model (the greedy anchor). Each later slot draws a
@@ -94,6 +100,104 @@ Every failed path fails **open**: a sampling overrun degrades Bo5 → Bo-K →
 a normal answer, with a muted footer explaining what happened. Never a dead
 turn.
 
+The switch, candidate counts, verify budget and model mix are all editable
+live from the Web settings panel — see
+[Web settings panel](#web-settings-panel-best-of-n).
+
+## Web settings panel (Best-of-N)
+
+The dsh Web UI exposes one settings section (`verifier-pro` → **Best-of-N**).
+Every control writes the settings document and applies to the **very next
+turn** — no restart. The per-turn decision is `resolveBoNMode` (settings →
+config default → off) and it is **all-or-nothing**: the mode applies to every
+conversation; there is **no per-session tier**.
+
+### Current effect (live banner)
+
+A status banner at the top of the panel states the actual outcome of the
+current settings in plain English — there is no "which sessions" question
+left to guess:
+
+- `Best-of-N is ON for every conversation · 5-way`
+- `Best-of-N is OFF for every conversation`
+
+### Best-of-N mode (the whole decision)
+
+- **Off** — writes `boN: false`. The master kill-switch: nothing is sampled,
+  and it overrides the config default too.
+- **Fast · 3-way** — `boN: true`, `boNCandidates: 3`. ≈2–3× tokens, ≈2×
+  latency.
+- **Accurate · 5-way** — `boN: true`, `boNCandidates: 5`. ≈3–5× tokens,
+  2–4× latency (≈16 model calls — the paper's Bo5).
+- **Custom** — `boN: true`, `boNCandidates: N`, with N clamped to 2–8.
+
+### Advanced settings (folded by default)
+
+- **Verify timeout (seconds)** — independent wall-clock budget for the
+  **ranking phase only** (default 90 s, range 30–600). Sampling is budgeted
+  separately (`timeoutMsBoN`). On timeout the turn degrades to a plain answer
+  with a footer note.
+- **Model mix (candidate diversity)** — textarea, one entry per line:
+  `provider/model` names an explicit provider route (split at the **first**
+  `/`); a bare model id with no `/` rides the conversation's provider.
+  Candidate 0 is always the conversation's model (greedy anchor); slots
+  1..N−1 fill from the list in order; slots beyond the list fall back to
+  anchor-model variants at the sampling temperature.
+  - **Save model mix** parses and writes `boNModelMix` (momentary "Saved ✓"
+    feedback); **Restore config defaults** empties the section value (the
+    plugin-config base re-applies); the **Available models** badges
+    click-to-append with an explicit provider route.
+- **Auto-degrade when the endpoint lacks logprobs** — ON (default): when the
+  endpoint returns no token-level logprobs, grading falls back to sampling
+  the score letter, and the turn footer marks "sampling scoring" (slightly
+  less precise). OFF: strict mode — unsupported endpoints surface the error
+  directly and Bo-N turns return as plain answers; never a silent downgrade.
+
+### How do I know it's running?
+
+Every Best-of-N turn appends a muted footer to the answer — "⚡ Best-of-N ·
+5-choose-1 → …" — with the tier, elapsed time and token use; the server
+console also logs `[bo-n] mode: …` per turn.
+
+## Faithfulness to the paper
+
+The tools, the service and the Bo-N mode implement the LLM-as-a-Verifier
+method (arXiv:2607.05391) exactly as shipped by the
+[official repository](https://github.com/llm-as-a-verifier/llm-as-a-verifier)
+(MIT): fine-grained reward = expectation over the verifier's top-20 logprob
+distribution at the `<score_A>` / `<score_B>` positions of a 20-letter
+(A–T) scale, normalized to [0, 1] (paper Eq. 3.1); Bradley–Terry preference
+p = σ(R_A − R_B) (Eq. 3.2); Probabilistic Pivot Tournament with a random
+Hamiltonian-cycle ring pass, top-k pivots by mean preference and pivot
+rounds — N + k(N−k) + C(k,2) = O(Nk) comparisons, seeded and reproducible
+(Algorithm 1); criteria decomposition (C) and repeated evaluations (K);
+per-checkpoint progress tracking (A = 0% … T = 100%); and the vLLM/SGLang
+score-tag prefill pass for logit-restricted backends (paper Appendix B.6).
+The pairwise and progress prompts match the official templates.
+
+Documented deviations vs. the official repo / paper — none changes the method:
+
+1. **Bo-N uses a full round-robin for N ≤ 3** (`src/bon.ts`): PPT only
+   applies from N ≥ 4, where it is cheaper and lower-variance; exhaustive
+   scoring of tiny pools is exact. `verify_select` always uses PPT.
+2. **Defaults are weaker than the paper's headline protocol** (G=20, K=8,
+   three-criterion decomposition): `verify_compare` K=1, `verify_select` K=4
+   (the official repo's default), the Bo-N turn K=1 with a single
+   `correctness` criterion. All are configurable (`nEvaluations`,
+   `criteria`, …).
+3. **`verify_track` is the offline one-call variant** (same as the official
+   `track()`): one call scores every checkpoint and sees the whole
+   trajectory; the strict per-prefix protocol (the official
+   `ProgressTracker`) is not ported.
+4. **No multimodal (image/video) inputs** — the official repo accepts
+   `images`; the TS backend does not.
+5. **No persistent JSON score cache** — `select` keeps an in-memory cache per
+   run only.
+6. **Not bit-reproducible across implementations** — the PRNG is mulberry32
+   (not Python's `random`), so a seed reproduces a tournament within JS but
+   not the same ring as Python; criterion-id slugging uses `-` instead of
+   `_`.
+
 ## Configuration
 
 Resolution order: plugin config → the `verifier` settings section →
@@ -111,7 +215,7 @@ pass so score tags land exactly at the label position.
     baseUrl: https://your-gateway/v1
     apiKey: credential:YOUR_API_KEY_ENV
     model: opencode-go/deepseek-v4-flash
-    boN: false          # Web panel / preset switches it on per session
+    boN: false          # master switch — the Web panel or this line turns it on; an explicit Off wins over everything
     boNCandidates: 5
     showFooter: true
 ```
