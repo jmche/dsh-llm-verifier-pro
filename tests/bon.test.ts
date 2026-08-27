@@ -59,4 +59,23 @@ describe('orchestrate sampling schedule', () => {
     const spread = Math.max(...startTimes) - Math.min(...startTimes)
     expect(spread).toBeLessThan(20)
   })
+
+  it('a broken single rollout does not sink the whole turn (parallel)', async () => {
+    let calls = 0
+    const stream = vi.fn(() => {
+      calls += 1
+      if (calls === 2) throw new Error('llm route failed') // one bad candidate
+      return unusable(0)
+    })
+    const backend = new VerifierBackend({ baseUrl: 'http://127.0.0.1:1/v1', apiKey: 'x', prefill: false })
+    const deps: OrchestrateDeps = { stream, backend, onTurnSummary: vi.fn() }
+    const out: StreamChunk[] = []
+    try {
+      for await (const chunk of orchestrate(deps, baseConfig('parallel'), options, () => unusable(0))) out.push(chunk)
+    } catch (error) {
+      throw new Error(`turn should degrade, not die: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    expect(out.length).toBeGreaterThan(0)
+    expect(stream).toHaveBeenCalledTimes(4) // the other three slots still ran
+  })
 })

@@ -105,6 +105,8 @@ the `verifier-pro` settings section (slot id `verifier-pro`, title
 - the master switch plus candidate count: Off (master kill-switch),
   3-way, 5-way, Custom (2–8)
 - the verify-phase timeout
+- the rollout schedule: Parallel (default, all candidates at once) or Serial
+  (one at a time — safer when several candidates share one slow local model)
 - the candidate model mix (`provider/model` lines; the first `/` splits the
   provider from the model id — a model id containing `/` must include its real
   provider, only a `/`-free id can ride the conversation's provider)

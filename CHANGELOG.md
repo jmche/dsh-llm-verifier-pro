@@ -30,15 +30,25 @@ per-session tier.
   backend raises instead of silently downgrading. Configurable from the
   panel, the settings section, or the plugin config; the backend records
   `lastGradingMode` for diagnostics.
+- **`samplingMode`** (`parallel` | `serial`): rollouts fire concurrently by
+  default; `serial` collects one at a time, safer when several candidates
+  share one slow local model. Exposed in the panel's Advanced settings
+  (Rollout schedule) and in the plugin config.
+- **Sampling hardening**: a single candidate that fails to start (e.g. an llm
+  route error) is absorbed as a failed slot instead of sinking the whole
+  turn — parallel and serial schedules both keep the anchor as the last
+  fallback, so `no fallback rollout` can no longer be caused by one bad
+  candidate.
 
 ### Docs
 - README / USER-GUIDE updated: new panel section, gating matrix, and a
   behavior-change note for `bo-n` session presets.
 
 ### Tests
-- 94 passing: `resolveBoNMode` rewritten for the two-layer gating; new
+- 97 passing: `resolveBoNMode` rewritten for the two-layer gating; new
   `VerifierBackend.autoDegrade` suite (default fallback / strict raise /
-  logprob grading).
+  logprob grading); `orchestrate` sampling-schedule suite (serial waits,
+  parallel concurrent, one bad candidate never sinks the turn).
 
 ## 0.1.0 (2026-08-26)
 

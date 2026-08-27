@@ -412,20 +412,35 @@ export async function* orchestrate(
           setTimeout(() => resolve(undefined), config.timeoutMs).unref?.()
         }),
       ])
+    // One broken candidate must never sink the whole turn: a synchronous
+    // throw while constructing the stream (e.g. an llm route resolution
+    // failure) is absorbed here and the slot counts as failed, not fatal.
+    const start = (label: string, make: () => AsyncIterable<StreamChunk>): Promise<Rollout | undefined> => {
+      try {
+        return collectCapped(make())
+      } catch (error) {
+        console.error(`[bo-n] ${label} failed to start: ${error instanceof Error ? error.message : String(error)}`)
+        return Promise.resolve(undefined)
+      }
+    }
     // Sampling schedule: parallel (default) fires every rollout at once;
     // serial waits for each to settle first — safer for slow local models.
     if (config.samplingMode === 'serial') {
       const serial: (Rollout | undefined)[] = []
-      serial.push(await collectCapped(lazyNext()))
+      serial.push(await start('anchor rollout', lazyNext))
       for (const request of sampled) {
-        serial.push(await collectCapped(deps.stream(request)))
+        if (!request) continue
+        serial.push(await start('slot rollout', () => deps.stream(request)))
       }
       collected = serial
     } else {
-      collected = await Promise.all([
-        collectCapped(lazyNext()),
-        ...sampled.map(request => collectCapped(deps.stream(request))),
-      ])
+      const inflight: Promise<Rollout | undefined>[] = []
+      inflight.push(start('anchor rollout', lazyNext))
+      for (const request of sampled) {
+        if (!request) continue
+        inflight.push(start('slot rollout', () => deps.stream(request)))
+      }
+      collected = await Promise.all(inflight)
     }
     const usable = collected.filter((rollout): rollout is Rollout => rollout !== undefined && rollout.usable)
     const dropped = collected.length - usable.length
