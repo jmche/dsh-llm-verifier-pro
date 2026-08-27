@@ -174,6 +174,8 @@ export interface VerifierSettingsSection {
   boN?: boolean
   /** Global-tier candidates override. */
   boNCandidates?: number
+  /** Rollout schedule: 'serial' to collect one-at-a-time; 'parallel' otherwise. */
+  samplingMode?: string
   /** Strict-mode switch: false = raise on endpoints without logprobs. */
   autoDegrade?: boolean
   /** Verify-phase wall-clock budget in ms. */
@@ -191,6 +193,7 @@ const SettingsSectionSchema = z.object({
   model: z.string().default(''),
   boN: z.boolean(),
   boNCandidates: z.number(),
+  samplingMode: z.string(),
   autoDegrade: z.boolean(),
   verifyTimeoutMs: z.number(),
   criteria: z.array(z.string()),
@@ -769,7 +772,6 @@ export function apply(ctx: Context, config: Config): void {
       const boNConfig: BoNConfig = {
         nCandidates: decision.nCandidates,
         samplingTemperature: cfg.samplingTemperature ?? 0.7,
-        samplingMode: cfg.samplingMode === 'serial' ? 'serial' : 'parallel',
         // Web panel wins over plugin config for the mix (hot re-read per turn).
         // both layers are normalized: settings-document strings like
         // `omni-chat/agnes/...` whose head is a real provider become explicit
@@ -781,6 +783,10 @@ export function apply(ctx: Context, config: Config): void {
         })(),
         timeoutMs: cfg.timeoutMsBoN ?? 120_000,
         verifyTimeoutMs: sectionReader().verifyTimeoutMs ?? cfg.verifyTimeoutMsBoN ?? 90_000,
+        // Rollout schedule: panel wins over config, config over the default.
+        samplingMode: sectionReader().samplingMode === 'serial'
+          ? 'serial'
+          : (cfg.samplingMode === 'serial' ? 'serial' : 'parallel'),
         showFooter: cfg.showFooter ?? true,
         criteria: sectionReader().criteria?.length ? sectionReader().criteria : cfg.criteria,
         pivots: cfg.boNPivots ?? 2,

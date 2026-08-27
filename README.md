@@ -137,6 +137,9 @@ left to guess:
   **ranking phase only** (default 90 s, range 30–600). Sampling is budgeted
   separately (`timeoutMsBoN`). On timeout the turn degrades to a plain answer
   with a footer note.
+- **Rollout schedule** — Parallel (default): all candidates fire at once,
+  fastest on fast models. Serial: one candidate at a time, safer when several
+  candidates share one slow local model.
 - **Model mix (candidate diversity)** — textarea, one entry per line:
   `provider/model` names an explicit provider route (split at the **first**
   `/`); a bare model id with no `/` rides the conversation's provider.

@@ -131,6 +131,8 @@ export interface VerifierSettingsSection {
     boN?: boolean;
     /** Global-tier candidates override. */
     boNCandidates?: number;
+    /** Rollout schedule: 'serial' to collect one-at-a-time; 'parallel' otherwise. */
+    samplingMode?: string;
     /** Strict-mode switch: false = raise on endpoints without logprobs. */
     autoDegrade?: boolean;
     /** Verify-phase wall-clock budget in ms. */
