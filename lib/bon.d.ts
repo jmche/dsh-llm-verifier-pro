@@ -101,7 +101,7 @@ export declare function markInternalRequest(options: object): void;
 /** The verify task description: the last user message of the conversation. */
 export declare function taskOf(options: GenerateOptions): string;
 /** Collect one rollout from a chunk stream: raw chunks + assembled text. */
-export declare function collectRollout(stream: AsyncIterable<StreamChunk>): Promise<Rollout | undefined>;
+export declare function collectRollout(stream: AsyncIterable<StreamChunk>, label?: string): Promise<Rollout | undefined>;
 /**
  * Replay `chunks` (the winner's raw chunks) and, when `footer` is set, append a
  * small independent text block just before the terminal `finish` chunk.

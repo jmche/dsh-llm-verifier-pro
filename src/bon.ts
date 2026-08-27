@@ -132,7 +132,7 @@ export function taskOf(options: GenerateOptions): string {
 }
 
 /** Collect one rollout from a chunk stream: raw chunks + assembled text. */
-export async function collectRollout(stream: AsyncIterable<StreamChunk>): Promise<Rollout | undefined> {
+export async function collectRollout(stream: AsyncIterable<StreamChunk>, label = 'rollout'): Promise<Rollout | undefined> {
   const chunks: StreamChunk[] = []
   const assembler = new BlockAssembler()
   try {
@@ -140,7 +140,8 @@ export async function collectRollout(stream: AsyncIterable<StreamChunk>): Promis
       chunks.push(chunk)
       assembler.push(chunk)
     }
-  } catch {
+  } catch (error) {
+    console.error(`[bo-n] ${label} stream failed: ${error instanceof Error ? error.message : String(error)}`)
     return undefined // a failed rollout is dropped, never fatal
   }
   const blocks = assembler.blocks()
@@ -151,7 +152,13 @@ export async function collectRollout(stream: AsyncIterable<StreamChunk>): Promis
     .trim()
   const hasToolCall = blocks.some(block => block.type === 'tool-call')
   const finishedWell = assembler.finish.kind === 'stop'
-  return { chunks, text, usable: text.length > 0 && !hasToolCall && finishedWell }
+  const usable = text.length > 0 && !hasToolCall && finishedWell
+  if (!usable) {
+    console.error(
+      `[bo-n] ${label} unusable: text=${String(text.length)} chars, toolCall=${String(hasToolCall)}, finish=${String(assembler.finish.kind)}`,
+    )
+  }
+  return { chunks, text, usable }
 }
 
 /**
@@ -411,19 +418,25 @@ export async function* orchestrate(
     // is abandoned, not waited for — the survivors continue the turn as a
     // smaller Bo-K (degrade chain: Bo5 with 2 overruns → Bo3; below 2
     // survivors the turn fails open).
-    const collectCapped = (stream: AsyncIterable<StreamChunk>): Promise<Rollout | undefined> =>
-      Promise.race([
-        collectRollout(stream),
-        new Promise<Rollout | undefined>(resolve => {
-          setTimeout(() => resolve(undefined), config.timeoutMs).unref?.()
+    const collectCapped = (label: string, stream: AsyncIterable<StreamChunk>): Promise<Rollout | undefined> => {
+      let finished = false
+      return Promise.race([
+        collectRollout(stream, label).then((rollout) => { finished = true; return rollout }),
+        new Promise<Rollout | undefined>((resolve) => {
+          const id = setTimeout(() => {
+            if (!finished) console.error(`[bo-n] ${label} exceeded the ${config.timeoutMs}ms sampling budget`)
+            resolve(undefined)
+          }, config.timeoutMs)
+          id.unref?.()
         }),
       ])
+    }
     // One broken candidate must never sink the whole turn: a synchronous
     // throw while constructing the stream (e.g. an llm route resolution
     // failure) is absorbed here and the slot counts as failed, not fatal.
     const start = (label: string, make: () => AsyncIterable<StreamChunk>): Promise<Rollout | undefined> => {
       try {
-        return collectCapped(make())
+        return collectCapped(label, make())
       } catch (error) {
         console.error(`[bo-n] ${label} failed to start: ${error instanceof Error ? error.message : String(error)}`)
         return Promise.resolve(undefined)
