@@ -31,6 +31,12 @@ export interface BoNConfig {
   /** Sampling temperature for the diversity rollouts. */
   readonly samplingTemperature: number
   /**
+   * Rollout schedule: `parallel` (default) fires every candidate at once;
+   * `serial` waits for each to settle first — safer when several candidates
+   * share one slow local model.
+   */
+  readonly samplingMode: 'parallel' | 'serial'
+  /**
    * Model mix for the non-anchor candidates. The FIRST candidate (index 0)
    * always rides the conversation's own model — the greedy anchor. Each
    * remaining slot is drawn, in order, from this list; entries beyond the
@@ -406,10 +412,21 @@ export async function* orchestrate(
           setTimeout(() => resolve(undefined), config.timeoutMs).unref?.()
         }),
       ])
-    collected = await Promise.all([
-      collectCapped(lazyNext()),
-      ...sampled.map(request => collectCapped(deps.stream(request))),
-    ])
+    // Sampling schedule: parallel (default) fires every rollout at once;
+    // serial waits for each to settle first — safer for slow local models.
+    if (config.samplingMode === 'serial') {
+      const serial: (Rollout | undefined)[] = []
+      serial.push(await collectCapped(lazyNext()))
+      for (const request of sampled) {
+        serial.push(await collectCapped(deps.stream(request)))
+      }
+      collected = serial
+    } else {
+      collected = await Promise.all([
+        collectCapped(lazyNext()),
+        ...sampled.map(request => collectCapped(deps.stream(request))),
+      ])
+    }
     const usable = collected.filter((rollout): rollout is Rollout => rollout !== undefined && rollout.usable)
     const dropped = collected.length - usable.length
     console.error(`[bo-n] turn: ${String(collected.length)} rollouts, ${String(usable.length)} usable`)

@@ -98,6 +98,12 @@ export interface Config {
   boNCandidates?: number
   /** Sampling temperature for the diversity rollouts. Defaults to 0.7. */
   samplingTemperature?: number
+  /**
+   * Candidate rollout schedule: `parallel` (default) fires every rollout at
+   * once; `serial` collects one at a time — safer when several candidates
+   * share one slow local model.
+   */
+  samplingMode?: string
   /** Wall-clock budget for the sampling phase. Defaults to 120s. */
   timeoutMsBoN?: number
   /** INDEPENDENT wall-clock budget for the verify phase. Defaults to 90s. */
@@ -149,6 +155,7 @@ export const Config: z<Config> = z.object({
   boN: z.boolean().default(false),
   boNCandidates: z.number().default(5),
   samplingTemperature: z.number().default(0.7),
+  samplingMode: z.string().default('parallel'),
   timeoutMsBoN: z.number().default(120_000),
   verifyTimeoutMsBoN: z.number().default(90_000),
   showFooter: z.boolean().default(true),
@@ -762,6 +769,7 @@ export function apply(ctx: Context, config: Config): void {
       const boNConfig: BoNConfig = {
         nCandidates: decision.nCandidates,
         samplingTemperature: cfg.samplingTemperature ?? 0.7,
+        samplingMode: cfg.samplingMode === 'serial' ? 'serial' : 'parallel',
         // Web panel wins over plugin config for the mix (hot re-read per turn).
         // both layers are normalized: settings-document strings like
         // `omni-chat/agnes/...` whose head is a real provider become explicit

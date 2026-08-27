@@ -79,6 +79,12 @@ export interface Config {
     boNCandidates?: number;
     /** Sampling temperature for the diversity rollouts. Defaults to 0.7. */
     samplingTemperature?: number;
+    /**
+     * Candidate rollout schedule: `parallel` (default) fires every rollout at
+     * once; `serial` collects one at a time — safer when several candidates
+     * share one slow local model.
+     */
+    samplingMode?: string;
     /** Wall-clock budget for the sampling phase. Defaults to 120s. */
     timeoutMsBoN?: number;
     /** INDEPENDENT wall-clock budget for the verify phase. Defaults to 90s. */

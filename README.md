@@ -217,6 +217,7 @@ pass so score tags land exactly at the label position.
     model: opencode-go/deepseek-v4-flash
     boN: false          # master switch — the Web panel or this line turns it on; an explicit Off wins over everything
     boNCandidates: 5
+    samplingMode: parallel   # rollouts per turn: 'parallel' (default) fires N at once; 'serial' waits one-at-a-time (safer when several candidates share one slow local model)
     showFooter: true
 ```
 

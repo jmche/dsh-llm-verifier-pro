@@ -45,6 +45,7 @@ Override the bundle defaults in the profile's `cordis.patch.yml`:
     boN: false              # master switch — the Web panel or this line turns it on; an explicit Off wins over everything
     boNCandidates: 5        # Candidates sampled per assistant turn
     samplingTemperature: 0.7
+    samplingMode: parallel  # 'parallel' (default) fires N rollouts at once; 'serial' waits one-at-a-time (safer for slow local models)
     timeoutMsBoN: 120000        # Sampling-phase budget (independent of the verify phase)
     verifyTimeoutMsBoN: 90000   # Verify-phase budget
     showFooter: true

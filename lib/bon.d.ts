@@ -26,6 +26,12 @@ export interface BoNConfig {
     /** Sampling temperature for the diversity rollouts. */
     readonly samplingTemperature: number;
     /**
+     * Rollout schedule: `parallel` (default) fires every candidate at once;
+     * `serial` waits for each to settle first — safer when several candidates
+     * share one slow local model.
+     */
+    readonly samplingMode: 'parallel' | 'serial';
+    /**
      * Model mix for the non-anchor candidates. The FIRST candidate (index 0)
      * always rides the conversation's own model — the greedy anchor. Each
      * remaining slot is drawn, in order, from this list; entries beyond the
