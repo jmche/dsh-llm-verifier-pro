@@ -7,8 +7,9 @@ read the root `README.md` first.
 ## Installation
 
 ```bash
-# Option A: install from npm (after it is published)
-dsh plugin --profile web add dsh-llm-verifier-pro
+# Option A: install from GitHub (recommended — the compiled lib/ is tracked
+# in the repo, so this works immediately)
+dsh plugin --profile web add github:jmche/dsh-llm-verifier-pro
 
 # Option B: local development install (file: / link: dependency)
 dsh plugin --profile web add /path/to/dsh-llm-verifier-pro

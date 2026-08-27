@@ -17,11 +17,12 @@ over the verifier's top-20 logprob distribution at the score position
 ## Installation
 
 Requires a [DeepSeek Harness](https://github.com/deepseek-ai/dsh) profile
-(web or headless). Add the plugin to the target profile:
+(web or headless). Add the plugin to the target profile — the compiled
+`lib/` is tracked in this repo, so GitHub installs work out of the box:
 
 ```bash
-# from npm (after publication)
-dsh plugin --profile web add dsh-llm-verifier-pro
+# from GitHub (recommended — works immediately)
+dsh plugin --profile web add github:jmche/dsh-llm-verifier-pro
 
 # or from a local checkout / path
 dsh plugin --profile web add /path/to/dsh-llm-verifier-pro
