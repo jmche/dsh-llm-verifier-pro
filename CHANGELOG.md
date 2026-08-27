@@ -39,6 +39,12 @@ per-session tier.
   turn — parallel and serial schedules both keep the anchor as the last
   fallback, so `no fallback rollout` can no longer be caused by one bad
   candidate.
+- **`reasoningEffort` no longer leaks into candidates**: sampled rollouts drop
+  the main turn's `reasoningEffort`, so a candidate model that does not
+  declare that effort (e.g. `ollama-local/*`) is no longer rejected by
+  dsh-llm validation ("does not support reasoning effort high") — fixing a
+  common cause of `0 usable` when the main turn runs with a high effort but
+  the mix includes local models.
 
 ### Docs
 - README / USER-GUIDE updated: new panel section, gating matrix, and a
