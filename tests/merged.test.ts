@@ -215,6 +215,39 @@ describe('resolveBackend (zero-config inheritance)', () => {
     expect(backend.config.apiKey).toBe('session-key')
     expect(backend.config.deepseek).toBe(false)
   })
+
+  it('verifier route: provider/model resolves endpoint from the provider config', async () => {
+    const ctx = {
+      llm: { listProviders: () => [{ id: 'omni-chat', name: '' }] },
+      get: vi.fn((key: string) => {
+        if (key === 'settings') {
+          return { get: () => ({ providers: { 'omni-chat': { baseURL: 'https://gw.example/v1', apiKeyEnv: 'OMNI_CHAT_API_KEY' } } }) }
+        }
+        if (key === 'credentials') return { resolve: async () => ({ value: 'gw-key' }) }
+        return undefined
+      }),
+    } as never
+    const backend = await resolveBackend(ctx, {}, undefined, () => ({ verifier: 'omni-chat/ollama-local/qwen3.8:27b' }))
+    expect(backend.config.baseUrl).toBe('https://gw.example/v1')
+    expect(backend.config.model).toBe('ollama-local/qwen3.8:27b')
+    expect(backend.config.apiKey).toBe('gw-key')
+  })
+
+  it('verifier bare model id rides the session provider', async () => {
+    const ctx = {
+      get: vi.fn((key: string) => {
+        if (key === 'settings') {
+          return { get: () => ({ providers: { 'omni-chat': { baseURL: 'https://gw.example/v1', apiKeyEnv: 'OMNI_CHAT_API_KEY' } } }) }
+        }
+        if (key === 'credentials') return { resolve: async () => ({ value: 'gw-key-2' }) }
+        return undefined
+      }),
+    } as never
+    const conversation = { provider: 'omni-chat', model: 'x' } as never
+    const backend = await resolveBackend(ctx, {}, conversation, () => ({ verifier: 'deepseek-chat' }))
+    expect(backend.config.baseUrl).toBe('https://gw.example/v1')
+    expect(backend.config.model).toBe('deepseek-chat')
+  })
 })
 describe('prefill gating (main response usable -> skip)', () => {
   it('skips prefill when the main response already carries a scoreable tag + logprobs', async () => {

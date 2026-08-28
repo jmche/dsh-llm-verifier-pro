@@ -141,10 +141,11 @@ left to guess:
   fastest on fast models. Serial: one candidate at a time, safer when several
   candidates share one slow local model.
 - **Verifier (scoring model)** — the single model that grades every candidate
-  pair. All three fields empty → **follows the session model** (zero-config
-  default, the paper's self-verification); fill Base URL / Model / API key to
-  pin a dedicated scoring endpoint. The endpoint must return token-level
-  logprobs.
+  pair. One line, **same rule as the Model mix**: `provider/model` looks the
+  endpoint and API key up from dsh's provider configuration (no base URL to
+  type); a bare model id without `/` rides the session's provider. Empty →
+  **follows the session model** (zero-config default, the paper's
+  self-verification). The resolved endpoint must return token-level logprobs.
 - **Model mix (candidate diversity)** — textarea, one entry per line:
   `provider/model` names an explicit provider route (split at the **first**
   `/`); a bare model id with no `/` rides the conversation's provider.

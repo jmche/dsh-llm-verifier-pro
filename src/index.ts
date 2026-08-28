@@ -69,6 +69,14 @@ export interface Config {
   apiKey?: string
   /** Verifier model. Empty → settings section → the conversation's model (DeepSeek routes only) → deepseek-v4-flash, or /models on non-DeepSeek endpoints. */
   model?: string
+  /**
+   * Verifier as a `provider/model` ROUTE (preferred): endpoint and API key are
+   * looked up from dsh's provider config (exactly like Model mix entries), so
+   * a user who already configured a gateway and models never types a base
+   * URL. A bare model id (no `/`) rides the session provider. Empty (default)
+   * follows the session model entirely.
+   */
+  verifier?: string
   /** Per-request timeout in milliseconds. Defaults to 60000. */
   timeoutMs?: number
   /** Maximum in-flight verifier calls. Defaults to 8. */
@@ -143,6 +151,7 @@ export const Config: z<Config> = z.object({
   baseUrl: z.string(),
   apiKey: z.string(),
   model: z.string(),
+  verifier: z.string(),
   timeoutMs: z.number(),
   maxConcurrency: z.number(),
   deepseek: z.boolean(),
@@ -170,6 +179,8 @@ export interface VerifierSettingsSection {
   baseURL?: string
   apiKey?: string
   model?: string
+  /** Verifier as a `provider/model` route; empty = follow the session model. */
+  verifier?: string
   /** Bo-N global switch. */
   boN?: boolean
   /** Global-tier candidates override. */
@@ -191,6 +202,7 @@ const SettingsSectionSchema = z.object({
   baseURL: z.string().default(''),
   apiKey: z.string().default(''),
   model: z.string().default(''),
+  verifier: z.string().default(''),
   boN: z.boolean(),
   boNCandidates: z.number(),
   samplingMode: z.string(),
@@ -266,6 +278,7 @@ export function sectionReaderOf(ctx: Context, config: Config): SettingsSectionRe
         baseURL: 'baseUrl',
         apiKey: 'apiKey',
         model: 'model',
+        verifier: 'verifier',
         boN: 'boN',
         boNCandidates: 'boNCandidates',
         autoDegrade: 'autoDegrade',
@@ -380,18 +393,20 @@ export function sessionProviderEndpoint(ctx: Context, provider: string): { baseU
 
 /**
  * Resolve the verifier backend connection from dsh's configured provider
- * state. Default (no explicit config and no panel/verifier section): the
- * verifier FOLLOWS THE SESSION — same provider route, endpoint and model as
- * the conversation, so a user who only turns on Best-of-N gets the zero-config
- * self-verification experience (generate N variants and grade them all with
- * the conversation's own model).
+ * state. Default (no explicit config, no panel Verifier route and no
+ * three-part endpoint): the verifier FOLLOWS THE SESSION — same provider
+ * route, endpoint and model as the conversation, so a user who only turns on
+ * Best-of-N gets the zero-config self-verification experience (generate N
+ * variants and grade them all with the conversation's own model).
  *
- *  - base URL: config.baseUrl → section.baseURL → conversation provider
- *    endpoint → OPENAI_BASE_URL → DEEPSEEK_API_KEY implies api.deepseek.com.
- *  - API key: config.apiKey (credential:/env:/plain) → section.apiKey →
- *    conversation provider's key env (credentials seam → ambient).
- *  - model: config.model → section.model → the conversation's own model
- *    (any provider route) → deepseek-v4-flash (DeepSeek) / server /models.
+ * Resolution order:
+ *  1. `verifier` route (config.verifier / section.verifier) — a
+ *     `provider/model` string like the Model mix entries: endpoint + key env
+ *     are read from dsh's provider config; a bare model id rides the session
+ *     provider.
+ *  2. three-part endpoint: config.baseUrl/apiKey/model → section.baseURL/
+ *     apiKey/model → session provider endpoint → env chain.
+ *  3. model falls back to the conversation's own model (any provider route).
  */
 export async function resolveBackend(
   ctx: Context,
@@ -403,23 +418,41 @@ export async function resolveBackend(
 
   const provider = conversation?.provider ?? ''
   const sessionEndpoint = provider ? sessionProviderEndpoint(ctx, provider) : {}
-  const apiKeyEnv = sessionEndpoint.apiKeyEnv ?? 'DEEPSEEK_API_KEY'
 
-  let baseUrl =
-    (config.baseUrl ?? '').trim() ||
-    section.baseURL?.trim() ||
-    sessionEndpoint.baseUrl?.trim() ||
-    process.env.OPENAI_BASE_URL?.trim() ||
-    ''
+  // Preferred form: a `provider/model` route (Model mix semantics). The
+  // endpoint and key env come from that provider's dsh configuration, not
+  // from the user; empty → still follow the session / explicit 3-part config.
+  const routeText = ((config.verifier ?? '').trim() || (section.verifier ?? '').trim() || '')
+  let baseUrl = ''
+  let apiKeyEnv = 'DEEPSEEK_API_KEY'
+  let model = ''
+
+  if (routeText) {
+    const parsed = normalizeMixEntry(routeText, knownProvidersOf(ctx))
+    const routeProvider = typeof parsed === 'string'
+      ? provider
+      : (parsed.provider && parsed.provider.length > 0 ? parsed.provider : provider)
+    const routeModel = typeof parsed === 'string' ? parsed : parsed.model
+    const routeEndpoint = routeProvider ? sessionProviderEndpoint(ctx, routeProvider) : {}
+    baseUrl = routeEndpoint.baseUrl?.trim() ?? ''
+    apiKeyEnv = routeEndpoint.apiKeyEnv ?? apiKeyEnv
+    model = routeModel
+  } else {
+    baseUrl =
+      (config.baseUrl ?? '').trim() ||
+      section.baseURL?.trim() ||
+      sessionEndpoint.baseUrl?.trim() ||
+      process.env.OPENAI_BASE_URL?.trim() ||
+      ''
+    if (baseUrl.length === 0) baseUrl = ''
+    apiKeyEnv = sessionEndpoint.apiKeyEnv ?? apiKeyEnv
+    const inheritedModel = conversation?.model ?? ''
+    model = (config.model ?? '').trim() || section.model?.trim() || inheritedModel || ''
+  }
+
   if (baseUrl.length === 0 && process.env.DEEPSEEK_API_KEY?.trim()) baseUrl = 'https://api.deepseek.com'
-  if (baseUrl.length === 0) baseUrl = ''
 
   const apiKey = await resolveApiKey(ctx, config, section, apiKeyEnv)
-
-  // Model: explicit → settings → the conversation's own model (any route) → default.
-  const inheritedModel = conversation?.model ?? ''
-  const model = (config.model ?? '').trim() || section.model?.trim() || inheritedModel || ''
-
   const deepseek = config.deepseek ?? baseUrl.includes('api.deepseek.com')
 
   const backendConfig: BackendConfig = {

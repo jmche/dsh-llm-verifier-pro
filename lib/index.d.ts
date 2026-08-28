@@ -51,6 +51,14 @@ export interface Config {
     apiKey?: string;
     /** Verifier model. Empty → settings section → the conversation's model (DeepSeek routes only) → deepseek-v4-flash, or /models on non-DeepSeek endpoints. */
     model?: string;
+    /**
+     * Verifier as a `provider/model` ROUTE (preferred): endpoint and API key are
+     * looked up from dsh's provider config (exactly like Model mix entries), so
+     * a user who already configured a gateway and models never types a base
+     * URL. A bare model id (no `/`) rides the session provider. Empty (default)
+     * follows the session model entirely.
+     */
+    verifier?: string;
     /** Per-request timeout in milliseconds. Defaults to 60000. */
     timeoutMs?: number;
     /** Maximum in-flight verifier calls. Defaults to 8. */
@@ -127,6 +135,8 @@ export interface VerifierSettingsSection {
     baseURL?: string;
     apiKey?: string;
     model?: string;
+    /** Verifier as a `provider/model` route; empty = follow the session model. */
+    verifier?: string;
     /** Bo-N global switch. */
     boN?: boolean;
     /** Global-tier candidates override. */
@@ -178,18 +188,20 @@ export declare function sessionProviderEndpoint(ctx: Context, provider: string):
 };
 /**
  * Resolve the verifier backend connection from dsh's configured provider
- * state. Default (no explicit config and no panel/verifier section): the
- * verifier FOLLOWS THE SESSION — same provider route, endpoint and model as
- * the conversation, so a user who only turns on Best-of-N gets the zero-config
- * self-verification experience (generate N variants and grade them all with
- * the conversation's own model).
+ * state. Default (no explicit config, no panel Verifier route and no
+ * three-part endpoint): the verifier FOLLOWS THE SESSION — same provider
+ * route, endpoint and model as the conversation, so a user who only turns on
+ * Best-of-N gets the zero-config self-verification experience (generate N
+ * variants and grade them all with the conversation's own model).
  *
- *  - base URL: config.baseUrl → section.baseURL → conversation provider
- *    endpoint → OPENAI_BASE_URL → DEEPSEEK_API_KEY implies api.deepseek.com.
- *  - API key: config.apiKey (credential:/env:/plain) → section.apiKey →
- *    conversation provider's key env (credentials seam → ambient).
- *  - model: config.model → section.model → the conversation's own model
- *    (any provider route) → deepseek-v4-flash (DeepSeek) / server /models.
+ * Resolution order:
+ *  1. `verifier` route (config.verifier / section.verifier) — a
+ *     `provider/model` string like the Model mix entries: endpoint + key env
+ *     are read from dsh's provider config; a bare model id rides the session
+ *     provider.
+ *  2. three-part endpoint: config.baseUrl/apiKey/model → section.baseURL/
+ *     apiKey/model → session provider endpoint → env chain.
+ *  3. model falls back to the conversation's own model (any provider route).
  */
 export declare function resolveBackend(ctx: Context, config: Config, conversation?: GenerateOptions, sectionReader?: SettingsSectionReader): Promise<VerifierBackend>;
 /** The Bo-N mode decision for one conversation request. */
