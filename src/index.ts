@@ -465,6 +465,10 @@ export async function resolveBackend(
     prefill: config.prefill,
     autoDegrade: section.autoDegrade ?? config.autoDegrade ?? true,
   }
+  console.error(
+    `[verifier] backend resolved: baseUrl=${baseUrl || '(session endpoint)'} ` +
+      `model=${model || '(conversation model)'} deepseek=${String(deepseek)}`,
+  )
   return new VerifierBackend(backendConfig)
 }
 
