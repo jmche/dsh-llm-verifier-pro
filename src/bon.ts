@@ -119,6 +119,36 @@ function messageText(content: unknown): string {
   return ''
 }
 
+/**
+ * Remove thinking/reasoning content from a cloned request's message history.
+ *
+ * DeepSeek-family endpoints reject a request whose history carries a
+ * `reasoning_content` (a thinking-mode assistant reply) unless that exact
+ * content is passed back verbatim on the next call — and a sampled candidate
+ * (raised temperature, possibly a different model, no reasoningEffort) cannot
+ * satisfy that contract, so the endpoint answers HTTP 400 "The
+ * `reasoning_content` in the thinking mode must be passed back to the API".
+ *
+ * A candidate only needs the conversation's visible text and tool activity to
+ * write an alternative answer, so we drop `reasoning` blocks (and their replay
+ * state) from assistant messages. The resulting history is thinking-free and
+ * every provider can serialize it.
+ */
+function stripReasoning(messages: GenerateOptions['messages']): GenerateOptions['messages'] {
+  let changed = false
+  const stripped = messages.map((message) => {
+    if (message.role !== 'assistant') return message
+    const content = message.content.filter((block) => block.type !== 'reasoning')
+    if (content.length === message.content.length) return message
+    changed = true
+    const source = message.source.kind === 'model'
+      ? { ...message.source, replayState: undefined }
+      : message.source
+    return { ...message, content, source }
+  })
+  return changed ? stripped : messages
+}
+
 /** The verify task description: the last user message of the conversation. */
 export function taskOf(options: GenerateOptions): string {
   for (let i = options.messages.length - 1; i >= 0; i -= 1) {
@@ -433,7 +463,14 @@ export async function* orchestrate(
     // Phase 0 — the anchor, alone. It decides whether this turn is even a
     // Best-of-N candidate.
     const anchor = await start('anchor rollout', lazyNext)
-    if (anchor !== undefined && anchor.usable) {
+    if (anchor === undefined) {
+      // The anchor stream failed to even collect (it threw, or overran the
+      // sampling budget). Re-run the normal path once so the harness surfaces
+      // its own outcome — never a dead "no fallback rollout" turn.
+      yield* next()
+      return
+    }
+    if (anchor.usable) {
       // Phase 1 — the anchor IS a text answer: sample the diversity slots
       // around it. Candidates must NOT inherit the main turn's reasoningEffort
       // (a candidate model may not declare that effort, e.g. local ollama
@@ -450,6 +487,8 @@ export async function* orchestrate(
         delete (base as { tools?: unknown }).tools
         const request: GenerateOptions = {
           ...base,
+          // Strip thinking content from the cloned history — see stripReasoning.
+          messages: stripReasoning(base.messages),
           temperature: config.samplingTemperature,
           ...(typeof entry === 'string' || typeof entry === 'undefined'
             ? (entry !== undefined && entry.length > 0 ? { model: entry } : {})
@@ -480,8 +519,9 @@ export async function* orchestrate(
     } else {
       // Phase 0 shortcut — a tool-call / failed / empty anchor is a working
       // turn, not a final answer: replay it verbatim, Best-of-N does not
-      // apply, no sampling was spent.
-      collected = anchor === undefined ? [] : [anchor]
+      // apply, no sampling was spent. (anchor === undefined already returned
+      // above by re-running the normal path.)
+      collected = [anchor]
     }
     const usable = collected.filter((rollout): rollout is Rollout => rollout !== undefined && rollout.usable)
     const dropped = collected.length - usable.length

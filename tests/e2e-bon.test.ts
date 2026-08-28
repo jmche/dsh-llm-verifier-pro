@@ -139,4 +139,58 @@ describe('Bo-N end-to-end through the llm/stream waterfall', () => {
     expect(out.some((c) => c.type === 'text-delta')).toBe(true)
     expect(h.sampled.length).toBeGreaterThanOrEqual(0) // timing-independent: never throws
   })
+
+  it('strips reasoning content from sampled candidates (DeepSeek 400 reasoning_content guard)', async () => {
+    const h = harness()
+    // History carries a thinking-mode assistant reply: a reasoning block plus
+    // adapter replay state. DeepSeek endpoints reject the follow-up unless the
+    // reasoning_content is passed back verbatim — the candidates must not.
+    const request = conversationRequest({
+      messages: [
+        { role: 'user', content: 'Explain the sky.' },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'reasoning', text: 'think about Rayleigh scattering…' },
+            { type: 'text', text: 'The sky is blue because air scatters short wavelengths.' },
+          ],
+          source: {
+            kind: 'model',
+            provider: 'omni-chat',
+            model: 'opencode-go/deepseek-v4-flash',
+            replayState: { response: { id: 'deepseek-resp-1' } },
+          },
+        },
+        { role: 'user', content: 'Now in one sentence.' },
+      ],
+    })
+    const gen = waterfallOf(h.ctx)('llm/stream', request, () => textStream('plain anchor answer')) as AsyncIterable<StreamChunk>
+    for await (const _chunk of gen) { /* drain */ }
+    expect(h.sampled).toHaveLength(2)
+    for (const cand of h.sampled) {
+      const assistant = cand.messages.find((m) => m.role === 'assistant')
+      expect(assistant, 'history keeps the assistant message').toBeDefined()
+      expect(assistant!.content.some((b) => b.type === 'reasoning')).toBe(false) // reasoning stripped
+      expect(assistant!.content.some((b) => b.type === 'text')).toBe(true) // visible text kept
+      expect((assistant!.source as { replayState?: unknown }).replayState).toBeUndefined() // replay state cleared
+    }
+  })
+
+  it('a failed anchor re-runs the normal path instead of dying with no fallback', async () => {
+    const h = harness()
+    const request = conversationRequest()
+    let calls = 0
+    const inner = (): AsyncIterable<StreamChunk> => {
+      calls += 1
+      if (calls === 1) {
+        return (async function* () { throw new Error('adapter exploded') })()
+      }
+      return textStream('recovered plain answer')
+    }
+    const gen = waterfallOf(h.ctx)('llm/stream', request, inner) as AsyncIterable<StreamChunk>
+    const out: StreamChunk[] = []
+    for await (const chunk of gen) out.push(chunk)
+    expect(out.some((c) => c.type === 'text-delta')).toBe(true) // recovered, not dead
+    expect(calls).toBe(2) // anchor threw once, normal path re-ran once
+  })
 })
