@@ -38,6 +38,8 @@ window.__ModuleLoader__.load({
 .verifier-panel__option-hint{font-size:12px;color:var(--dsw-alias-text-secondary,#6b7280)}
 .verifier-panel__custom{display:flex;align-items:center;gap:8px;margin-left:22px}
 .verifier-panel__custom input{width:64px;padding:4px 8px;border:1px solid var(--dsw-alias-border-default,#e5e7eb);border-radius:6px;font-size:13px;background:var(--dsw-alias-bg-canvas,#fff);color:var(--dsw-alias-text-primary,#111827)}
+.verifier-panel__text{width:100%;padding:8px 10px;border:1px solid var(--dsw-alias-border-default,#e5e7eb);border-radius:8px;font-size:13px;background:var(--dsw-alias-bg-canvas,#fff);color:var(--dsw-alias-text-primary,#111827);box-sizing:border-box;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.verifier-panel__text:focus{outline:none;border-color:var(--dsw-alias-accent-primary,#2563eb)}
 .verifier-panel__effect{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid}
 .verifier-panel__effect--on{border-color:var(--dsw-alias-success-border,rgba(34,197,94,.45));background:var(--dsw-alias-success-subtle,rgba(34,197,94,.08))}
 .verifier-panel__effect--on .verifier-panel__effect-dot{background:#34d399}
@@ -293,6 +295,21 @@ window.__ModuleLoader__.load({
 				h("details", { className: "verifier-panel__fold" },
 					h("summary", { className: "verifier-panel__fold-summary" }, "Advanced settings"),
 					h("div", { className: "verifier-panel__fold-body" },
+						h("h3", { className: "verifier-panel__section-title" }, "Verifier (scoring model)"),
+						h("label", { className: "verifier-panel__option" },
+							h("input", { type: "checkbox", checked: false, style: { display: "none" } }),
+							h("div", { className: "verifier-panel__option-body" },
+								h("span", { className: "verifier-panel__option-hint" }, "The single model that grades every candidate pair and picks the winner. Leave all three empty to FOLLOW THE SESSION MODEL (zero-config default — candidates are graded by the conversation's own model)."),
+							),
+						),
+						h("div", { className: "verifier-panel__mix" },
+							h("div", { className: "verifier-panel__mix-hint" }, "Base URL (OpenAI-compatible)"),
+							h("input", { type: "text", className: "verifier-panel__text", placeholder: "e.g. https://api.deepseek.com or http://127.0.0.1:11434/v1 — empty = session provider", value: section.baseURL ?? "", disabled: busy, onChange: (event) => scope.set("baseURL", event.target.value) }),
+							h("div", { className: "verifier-panel__mix-hint" }, "Model"),
+							h("input", { type: "text", className: "verifier-panel__text", placeholder: "e.g. deepseek-chat — empty = session model", value: section.model ?? "", disabled: busy, onChange: (event) => scope.set("model", event.target.value) }),
+							h("div", { className: "verifier-panel__mix-hint" }, "API key (blank inherits the provider key)"),
+							h("input", { type: "password", className: "verifier-panel__text", placeholder: "credential:NAME or plain — empty = inherit", value: section.apiKey ?? "", disabled: busy, onChange: (event) => scope.set("apiKey", event.target.value) }),
+						),
 						h("h3", { className: "verifier-panel__section-title" }, "Verify timeout (seconds)"),
 						h("label", { className: "verifier-panel__option" },
 							h("input", { type: "checkbox", checked: false, style: { display: "none" } }),

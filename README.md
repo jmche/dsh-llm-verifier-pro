@@ -140,6 +140,11 @@ left to guess:
 - **Rollout schedule** — Parallel (default): all candidates fire at once,
   fastest on fast models. Serial: one candidate at a time, safer when several
   candidates share one slow local model.
+- **Verifier (scoring model)** — the single model that grades every candidate
+  pair. All three fields empty → **follows the session model** (zero-config
+  default, the paper's self-verification); fill Base URL / Model / API key to
+  pin a dedicated scoring endpoint. The endpoint must return token-level
+  logprobs.
 - **Model mix (candidate diversity)** — textarea, one entry per line:
   `provider/model` names an explicit provider route (split at the **first**
   `/`); a bare model id with no `/` rides the conversation's provider.
@@ -203,18 +208,30 @@ Documented deviations vs. the official repo / paper — none changes the method:
 
 ## Configuration
 
-Resolution order: plugin config → the `verifier` settings section →
-the dsh credentials seam (`credential:<name>` / provider env) →
-`OPENAI_BASE_URL` / `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` → `api.deepseek.com`.
+**Zero-config default:** with no explicit `baseUrl` / `apiKey` / `model` (and
+the panel's Verifier fields empty), the verifier **follows the session** —
+same provider route, endpoint and model as the conversation. Turning on
+Best-of-N alone gives the paper's *self-verification* experience: candidates
+are sampled as variants of the conversation's own model, and that same model
+grades them. The endpoint for the session provider is read from its settings
+namespace (`llm-pi-ai.providers.<name>` style). Only when the session
+provider is unknown does the resolution fall back to:
 
-Any OpenAI-compatible server with token-level logprobs works (vLLM, SGLang,
-OpenAI, DeepSeek). Non-DeepSeek servers get the optional vLLM/SGLang prefill
-pass so score tags land exactly at the label position.
+plugin config → the `verifier` settings section →
+session provider endpoint → `OPENAI_BASE_URL` / `OPENAI_API_KEY` /
+`DEEPSEEK_API_KEY` → `api.deepseek.com`.
+
+The verifier must sit on an endpoint that returns **token-level logprobs**
+(vLLM, SGLang, OpenAI, DeepSeek, and modern Ollama all do; a plain gateway
+that strips `logprobs` will not). Non-DeepSeek servers get the optional
+vLLM/SGLang prefill pass so score tags land exactly at the label position.
 
 ```yaml
 # ~/.dsh/profiles/<profile>/cordis.patch.yml
 - id: llm-verifier-pro
   config:
+    # Leave baseUrl/apiKey/model empty to follow the session model.
+    # Set them explicitly to use a dedicated scoring endpoint:
     baseUrl: https://your-gateway/v1
     apiKey: credential:YOUR_API_KEY_ENV
     model: opencode-go/deepseek-v4-flash

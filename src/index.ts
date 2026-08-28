@@ -349,16 +349,49 @@ async function resolveApiKey(ctx: Context, config: Config, section: VerifierSett
 }
 
 /**
+ * Resolve a session provider's endpoint configuration from dsh's settings
+ * namespaces. Container-style namespaces hold per-provider entries
+ * (`llm-pi-ai.providers.<name>.{baseURL, apiKeyEnv}`); a dedicated namespace
+ * (`llm-<provider>`) may itself carry the endpoint (`llm-deepseek`). Returns
+ * `{}` when the provider is unknown — the caller falls back to its env chain.
+ */
+export function sessionProviderEndpoint(ctx: Context, provider: string): { baseUrl?: string; apiKeyEnv?: string } {
+  if (!provider) return {}
+  try {
+    const settings = ctx.get('settings') as { get(ns: unknown): unknown } | undefined
+    if (!settings) return {}
+    for (const nsName of ['llm-pi-ai', `llm-${provider}`]) {
+      const section = settings.get(settingsNamespace(nsName)) as Record<string, unknown> | undefined
+      if (!section || typeof section !== 'object') continue
+      const providers = (section.providers ?? {}) as Record<string, { baseURL?: string; apiKeyEnv?: string }>
+      const entry = providers[provider]
+      if (entry && typeof entry.baseURL === 'string' && entry.baseURL.length > 0) {
+        return { baseUrl: entry.baseURL, apiKeyEnv: typeof entry.apiKeyEnv === 'string' ? entry.apiKeyEnv : undefined }
+      }
+      if (nsName === `llm-${provider}` && typeof section.baseURL === 'string' && section.baseURL.length > 0) {
+        return { baseUrl: section.baseURL, apiKeyEnv: typeof section.apiKeyEnv === 'string' ? section.apiKeyEnv : undefined }
+      }
+    }
+  } catch {
+    // degrade: fall through to the environment chain
+  }
+  return {}
+}
+
+/**
  * Resolve the verifier backend connection from dsh's configured provider
- * state, with plugin-config overrides taking precedence, then the settings
- * section, then the environment:
+ * state. Default (no explicit config and no panel/verifier section): the
+ * verifier FOLLOWS THE SESSION — same provider route, endpoint and model as
+ * the conversation, so a user who only turns on Best-of-N gets the zero-config
+ * self-verification experience (generate N variants and grade them all with
+ * the conversation's own model).
  *
- *  - base URL: config.baseUrl → section.baseURL → OPENAI_BASE_URL →
- *    DEEPSEEK_API_KEY implies api.deepseek.com.
+ *  - base URL: config.baseUrl → section.baseURL → conversation provider
+ *    endpoint → OPENAI_BASE_URL → DEEPSEEK_API_KEY implies api.deepseek.com.
  *  - API key: config.apiKey (credential:/env:/plain) → section.apiKey →
- *    credentials seam (apiKeyEnv) → ambient environment.
- *  - model: config.model → section.model → the conversation's model on
- *    DeepSeek routes → deepseek-v4-flash (DeepSeek) / server /models (other).
+ *    conversation provider's key env (credentials seam → ambient).
+ *  - model: config.model → section.model → the conversation's own model
+ *    (any provider route) → deepseek-v4-flash (DeepSeek) / server /models.
  */
 export async function resolveBackend(
   ctx: Context,
@@ -367,21 +400,27 @@ export async function resolveBackend(
   sectionReader: SettingsSectionReader = () => ({}),
 ): Promise<VerifierBackend> {
   const section = sectionReader()
-  const apiKeyEnv = 'DEEPSEEK_API_KEY'
 
-  let baseUrl = (config.baseUrl ?? '').trim() || section.baseURL?.trim() || process.env.OPENAI_BASE_URL?.trim() || ''
+  const provider = conversation?.provider ?? ''
+  const sessionEndpoint = provider ? sessionProviderEndpoint(ctx, provider) : {}
+  const apiKeyEnv = sessionEndpoint.apiKeyEnv ?? 'DEEPSEEK_API_KEY'
+
+  let baseUrl =
+    (config.baseUrl ?? '').trim() ||
+    section.baseURL?.trim() ||
+    sessionEndpoint.baseUrl?.trim() ||
+    process.env.OPENAI_BASE_URL?.trim() ||
+    ''
   if (baseUrl.length === 0 && process.env.DEEPSEEK_API_KEY?.trim()) baseUrl = 'https://api.deepseek.com'
   if (baseUrl.length === 0) baseUrl = ''
 
   const apiKey = await resolveApiKey(ctx, config, section, apiKeyEnv)
 
-  // Model: explicit → settings → conversation (DeepSeek routes only) → default.
-  const provider = conversation?.provider ?? ''
-  const conversationOnDeepSeek = provider === 'deepseek-official' || provider === 'deepseek'
-  const inheritedModel = conversationOnDeepSeek ? conversation?.model ?? '' : ''
+  // Model: explicit → settings → the conversation's own model (any route) → default.
+  const inheritedModel = conversation?.model ?? ''
   const model = (config.model ?? '').trim() || section.model?.trim() || inheritedModel || ''
 
-  const deepseek = config.deepseek ?? (baseUrl.includes('api.deepseek.com') || (!process.env.OPENAI_BASE_URL && !config.baseUrl && Boolean(process.env.DEEPSEEK_API_KEY)))
+  const deepseek = config.deepseek ?? baseUrl.includes('api.deepseek.com')
 
   const backendConfig: BackendConfig = {
     model: model || undefined,

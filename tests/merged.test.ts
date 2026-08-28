@@ -191,6 +191,30 @@ describe('resolveBackend (zero-config inheritance)', () => {
     expect(backend.config.baseUrl).toBe('https://omni.example/v1')
     expect(backend.config.apiKey).toBe('seam-key')
   })
+
+  it('zero-config: follows the session provider + model (any route)', async () => {
+    const ctx = {
+      get: vi.fn((key: string) => {
+        if (key === 'settings') {
+          return {
+            get: () => ({
+              providers: {
+                'omni-chat': { baseURL: 'https://session-gw.example/v1', apiKeyEnv: 'OMNI_CHAT_API_KEY' },
+              },
+            }),
+          }
+        }
+        if (key === 'credentials') return { resolve: async () => ({ value: 'session-key' }) }
+        return undefined
+      }),
+    } as never
+    const conversation = { provider: 'omni-chat', model: 'opencode-go/deepseek-v4-flash' } as never
+    const backend = await resolveBackend(ctx, {}, conversation, () => ({}))
+    expect(backend.config.baseUrl).toBe('https://session-gw.example/v1')
+    expect(backend.config.model).toBe('opencode-go/deepseek-v4-flash')
+    expect(backend.config.apiKey).toBe('session-key')
+    expect(backend.config.deepseek).toBe(false)
+  })
 })
 describe('prefill gating (main response usable -> skip)', () => {
   it('skips prefill when the main response already carries a scoreable tag + logprobs', async () => {

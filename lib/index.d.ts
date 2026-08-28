@@ -166,16 +166,30 @@ export declare function normalizeMixEntry(entry: ModelMixEntry | string, knownPr
  */
 export declare function sectionReaderOf(ctx: Context, config: Config): SettingsSectionReader;
 /**
+ * Resolve a session provider's endpoint configuration from dsh's settings
+ * namespaces. Container-style namespaces hold per-provider entries
+ * (`llm-pi-ai.providers.<name>.{baseURL, apiKeyEnv}`); a dedicated namespace
+ * (`llm-<provider>`) may itself carry the endpoint (`llm-deepseek`). Returns
+ * `{}` when the provider is unknown — the caller falls back to its env chain.
+ */
+export declare function sessionProviderEndpoint(ctx: Context, provider: string): {
+    baseUrl?: string;
+    apiKeyEnv?: string;
+};
+/**
  * Resolve the verifier backend connection from dsh's configured provider
- * state, with plugin-config overrides taking precedence, then the settings
- * section, then the environment:
+ * state. Default (no explicit config and no panel/verifier section): the
+ * verifier FOLLOWS THE SESSION — same provider route, endpoint and model as
+ * the conversation, so a user who only turns on Best-of-N gets the zero-config
+ * self-verification experience (generate N variants and grade them all with
+ * the conversation's own model).
  *
- *  - base URL: config.baseUrl → section.baseURL → OPENAI_BASE_URL →
- *    DEEPSEEK_API_KEY implies api.deepseek.com.
+ *  - base URL: config.baseUrl → section.baseURL → conversation provider
+ *    endpoint → OPENAI_BASE_URL → DEEPSEEK_API_KEY implies api.deepseek.com.
  *  - API key: config.apiKey (credential:/env:/plain) → section.apiKey →
- *    credentials seam (apiKeyEnv) → ambient environment.
- *  - model: config.model → section.model → the conversation's model on
- *    DeepSeek routes → deepseek-v4-flash (DeepSeek) / server /models (other).
+ *    conversation provider's key env (credentials seam → ambient).
+ *  - model: config.model → section.model → the conversation's own model
+ *    (any provider route) → deepseek-v4-flash (DeepSeek) / server /models.
  */
 export declare function resolveBackend(ctx: Context, config: Config, conversation?: GenerateOptions, sectionReader?: SettingsSectionReader): Promise<VerifierBackend>;
 /** The Bo-N mode decision for one conversation request. */
