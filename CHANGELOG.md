@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Fixes — Best-of-N sampling kept producing "0 usable" rollouts
+Root cause: every assistant turn was sampled N ways, **including tool-call
+turns** (the common case on agentic work — reading files, running commands).
+The clones inherited the tool schemas, so sampled models either called tools
+too (unusable) or the tools-bearing clone was rejected by the gateway
+(finish=error) — the turn degraded to "0 usable" and Best-of-N never engaged.
+- **Anchor-first gating**: the anchor (the conversation's own turn) is now
+  collected first, alone. Only when it is a real plain-text answer does
+  sampling start; a tool-call / failed / empty anchor is replayed verbatim
+  with zero sampling spent.
+- **`tools` stripped from sampled candidates**: diversity rollouts are
+  plain-text generators now — no tool schemas, so they cannot drift into
+  tool-calls and no gateway can reject them on tool-shape grounds.
+- **Real failure surfaced**: `collectRollout` now prints the adapter's
+  `failure` (`code`, HTTP status, message) for `finish=error` rollouts
+  instead of just `finish=error` — every earlier fix flew blind.
+
 ## 0.2.0 (2026-08-27)
 
 Best-of-N settings panel redesigned (v3): one decision, plain English, no

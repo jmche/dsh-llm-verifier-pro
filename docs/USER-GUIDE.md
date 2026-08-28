@@ -74,9 +74,13 @@ ctx.verifierPro.track(problem, steps)
 
 ### 3. Mode (Best-of-N conversation mode)
 
-When enabled, **every assistant turn** is sampled N ways and only the winner
-is replayed to you. The decision is re-evaluated per turn and is **all-or-
-nothing — it covers every conversation; there is no per-session tier**:
+When enabled, every assistant turn that produces a **final text answer** is
+sampled N ways and only the winner is replayed to you. **Tool-call turns are
+never sampled** — an action turn (reading a file, running a command, calling
+a tool) is replayed exactly as produced; Best-of-N ranks plain-text answers
+only, and sampling a working turn would waste tokens on unusable candidates.
+The decision is re-evaluated per turn and is **all-or-nothing — it covers
+every conversation; there is no per-session tier**:
 
 | Layer | Switch |
 |---|---|

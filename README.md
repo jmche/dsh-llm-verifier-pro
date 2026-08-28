@@ -55,10 +55,14 @@ Full walkthrough: [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md).
 
 ### 3. Mode (Best-of-N conversation mode)
 
-When enabled, every assistant turn is sampled N ways and only the winning
-response is replayed to you. The decision is re-evaluated per turn and is
-deliberately **all-or-nothing — the mode covers every conversation, there is
-no per-session tier**:
+When enabled, every assistant turn that produces a **final text answer** is
+sampled N ways and only the winning response is replayed to you. **Tool-call
+turns are never sampled** — when the model's turn is an action (reading a
+file, running a command, calling a tool), the turn is replayed exactly as
+produced: Best-of-N ranks text answers only, and sampling a working turn
+would waste tokens and produce unusable candidates. The decision is
+re-evaluated per turn and is deliberately **all-or-nothing — the mode covers
+every conversation, there is no per-session tier**:
 
 | Layer | Switch |
 |---|---|

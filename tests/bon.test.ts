@@ -14,6 +14,26 @@ function unusable(delayMs: number): AsyncGenerator<StreamChunk> {
   })()
 }
 
+/** A rollout that finishes as a USABLE plain-text answer (the anchor's shape). */
+function textRollout(text = 'candidate answer'): AsyncGenerator<StreamChunk> {
+  return (async function* () {
+    yield { type: 'block-start', index: 0, blockType: 'text' } as never as StreamChunk
+    yield { type: 'text-delta', index: 0, text } as never as StreamChunk
+    yield { type: 'block-end', index: 0, block: { type: 'text', text } } as never as StreamChunk
+    yield { type: 'finish', reason: { kind: 'stop' } } as never as StreamChunk
+  })()
+}
+
+/** A rollout that finishes as a tool-call turn (the anchor's shape on working turns). */
+function toolRollout(): AsyncGenerator<StreamChunk> {
+  return (async function* () {
+    yield { type: 'block-start', index: 0, blockType: 'tool-call' } as never as StreamChunk
+    yield { type: 'tool-call-delta', index: 0, id: 'call_1', name: 'read_file', argumentsDelta: '{}' } as never as StreamChunk
+    yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: 'call_1', name: 'read_file', arguments: '{}' } } as never as StreamChunk
+    yield { type: 'finish', reason: { kind: 'tool-calls' } } as never as StreamChunk
+  })()
+}
+
 function baseConfig(samplingMode: 'parallel' | 'serial'): BoNConfig {
   return {
     nCandidates: 5,
@@ -43,7 +63,8 @@ async function run(mode: 'parallel' | 'serial') {
   const backend = new VerifierBackend({ baseUrl: 'http://127.0.0.1:1/v1', apiKey: 'x', prefill: false })
   const deps: OrchestrateDeps = { stream, backend, onTurnSummary: vi.fn() }
   const out: StreamChunk[] = []
-  for await (const chunk of orchestrate(deps, baseConfig(mode), options, () => unusable(0))) out.push(chunk)
+  // Anchor must be a USABLE text answer for sampling to start at all.
+  for await (const chunk of orchestrate(deps, baseConfig(mode), options, () => textRollout())) out.push(chunk)
   return { startTimes, out, receivedOptions }
 }
 
@@ -82,11 +103,34 @@ describe('orchestrate sampling schedule', () => {
     const deps: OrchestrateDeps = { stream, backend, onTurnSummary: vi.fn() }
     const out: StreamChunk[] = []
     try {
-      for await (const chunk of orchestrate(deps, baseConfig('parallel'), options, () => unusable(0))) out.push(chunk)
+      for await (const chunk of orchestrate(deps, baseConfig('parallel'), options, () => textRollout())) out.push(chunk)
     } catch (error) {
       throw new Error(`turn should degrade, not die: ${error instanceof Error ? error.message : String(error)}`)
     }
     expect(out.length).toBeGreaterThan(0)
     expect(stream).toHaveBeenCalledTimes(4) // the other three slots still ran
+  })
+})
+
+describe('orchestrate anchor-first gating', () => {
+  it('a tool-call anchor is replayed verbatim WITHOUT sampling (working turns)', async () => {
+    const stream = vi.fn(() => unusable(0))
+    const backend = new VerifierBackend({ baseUrl: 'http://127.0.0.1:1/v1', apiKey: 'x', prefill: false })
+    const deps: OrchestrateDeps = { stream, backend, onTurnSummary: vi.fn() }
+    const out: StreamChunk[] = []
+    for await (const chunk of orchestrate(deps, baseConfig('parallel'), options, () => toolRollout())) out.push(chunk)
+    // The tool-turn chunks are replayed as-is; no diversity samples were fired.
+    expect(out.length).toBeGreaterThan(0)
+    expect(stream).not.toHaveBeenCalled()
+  })
+
+  it('a failed/empty anchor is replayed or surfaced, never sampled', async () => {
+    const stream = vi.fn(() => unusable(0))
+    const backend = new VerifierBackend({ baseUrl: 'http://127.0.0.1:1/v1', apiKey: 'x', prefill: false })
+    const deps: OrchestrateDeps = { stream, backend, onTurnSummary: vi.fn() }
+    const out: StreamChunk[] = []
+    for await (const chunk of orchestrate(deps, baseConfig('parallel'), options, () => unusable(0))) out.push(chunk)
+    expect(out.length).toBeGreaterThan(0)
+    expect(stream).not.toHaveBeenCalled()
   })
 })

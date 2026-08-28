@@ -151,11 +151,19 @@ export async function collectRollout(stream: AsyncIterable<StreamChunk>, label =
     .join('\n')
     .trim()
   const hasToolCall = blocks.some(block => block.type === 'tool-call')
-  const finishedWell = assembler.finish.kind === 'stop'
+  const finish = assembler.finish
+  const finishedWell = finish.kind === 'stop'
   const usable = text.length > 0 && !hasToolCall && finishedWell
   if (!usable) {
+    // Surface the REAL failure the adapter reported — the finish chunk carries
+    // { message, code, status } (normalizeLlmFailure). Previously only
+    // `finish=error` was printed, which is why every fix flew blind.
+    const failure = (finish as { failure?: { message?: string; code?: string; status?: number } }).failure
+    const failureNote = finish.kind === 'error' && failure
+      ? ` — ${String(failure.code)}${failure.status !== undefined ? ` (HTTP ${String(failure.status)})` : ''}: ${String(failure.message ?? '')}`
+      : ''
     console.error(
-      `[bo-n] ${label} unusable: text=${String(text.length)} chars, toolCall=${String(hasToolCall)}, finish=${String(assembler.finish.kind)}`,
+      `[bo-n] ${label} unusable: text=${String(text.length)} chars, toolCall=${String(hasToolCall)}, finish=${String(finish.kind)}${failureNote}`,
     )
   }
   return { chunks, text, usable }
@@ -368,40 +376,20 @@ export async function* orchestrate(
   options: GenerateOptions,
   next: () => AsyncIterable<StreamChunk>,
 ): AsyncGenerator<StreamChunk> {
-  // The diversity rollouts: same request, raised temperature, reentry-guarded.
-  // Candidate 0 is the greedy anchor (next() — the conversation's own model);
-  // each later slot draws from config.mixModels when configured, else falls
-  // back to the anchor model at the sampling temperature.
-  const extra = Math.max(0, config.nCandidates - 1)
-  const mixed = config.mixModels ?? []
-  const sampled = Array.from({ length: extra }, (_slot, i) => {
-    const entry = mixed[i]
-    // Sampling candidates must not inherit the main turn's reasoningEffort:
-    // a candidate model may not declare that effort (e.g. local ollama models
-    // don't support 'high'), which makes dsh-llm reject the whole slot during
-    // call validation. Dropping it lets each candidate use its own default.
-    const base = { ...options }
-    delete base.reasoningEffort
-    const request: GenerateOptions = {
-      ...base,
-      temperature: config.samplingTemperature,
-      ...(typeof entry === 'string' || typeof entry === 'undefined'
-        ? (entry !== undefined && entry.length > 0 ? { model: entry } : {})
-        : (entry.model.length > 0
-          ? { model: entry.model, ...(entry.provider && entry.provider.length > 0 ? { provider: entry.provider } : {}) }
-          : {})),
-    }
-    markInternalRequest(request)
-    return request
-  })
-  // Rollout 0 rides next() lazily — sampled only when the turn actually runs,
-  // so a rejected pre-flight leaves the normal path untouched.
+  // ── Anchor-first: only a PLAIN-TEXT main turn is worth Best-of-N ──────────
+  // A tool-call turn (agent working — reading files, running commands,
+  // browsing) has no rankable text answer. Sampling N clones of it wastes
+  // tokens and produces exactly the "0 usable" noise seen in the logs: the
+  // clones inherit the tools + tool-call history and either call tools again
+  // (unusable) or get rejected by the endpoint (finish=error). So the anchor
+  // (the conversation's own turn) is collected FIRST, alone; sampling starts
+  // only when the anchor turns out to be a real text answer.
+  const startedAt = Date.now()
   let fallbackStream: AsyncIterable<StreamChunk> | undefined
   const lazyNext = (): AsyncIterable<StreamChunk> => {
     fallbackStream ??= next()
     return fallbackStream
   }
-  const startedAt = Date.now()
   /** Sum the usage chunks carried by one rollout's stream (the honest sampling cost). */
   const rolloutTokens = (rollouts: readonly (Rollout | undefined)[]): number => rollouts.reduce((sum, rollout) => {
     return sum + (rollout?.chunks ?? []).reduce((inner, chunk) => {
@@ -442,24 +430,58 @@ export async function* orchestrate(
         return Promise.resolve(undefined)
       }
     }
-    // Sampling schedule: parallel (default) fires every rollout at once;
-    // serial waits for each to settle first — safer for slow local models.
-    if (config.samplingMode === 'serial') {
-      const serial: (Rollout | undefined)[] = []
-      serial.push(await start('anchor rollout', lazyNext))
-      for (const request of sampled) {
-        if (!request) continue
-        serial.push(await start('slot rollout', () => deps.stream(request)))
+    // Phase 0 — the anchor, alone. It decides whether this turn is even a
+    // Best-of-N candidate.
+    const anchor = await start('anchor rollout', lazyNext)
+    if (anchor !== undefined && anchor.usable) {
+      // Phase 1 — the anchor IS a text answer: sample the diversity slots
+      // around it. Candidates must NOT inherit the main turn's reasoningEffort
+      // (a candidate model may not declare that effort, e.g. local ollama
+      // models don't support 'high', which makes dsh-llm reject the whole
+      // slot during call validation) and must NOT inherit the tool schemas:
+      // a sampled candidate who starts calling tools produces an unusable
+      // rollout, and a tools-bearing clone can be rejected by gateways.
+      const extra = Math.max(0, config.nCandidates - 1)
+      const mixed = config.mixModels ?? []
+      const sampled = Array.from({ length: extra }, (_slot, i) => {
+        const entry = mixed[i]
+        const base = { ...options }
+        delete base.reasoningEffort
+        delete (base as { tools?: unknown }).tools
+        const request: GenerateOptions = {
+          ...base,
+          temperature: config.samplingTemperature,
+          ...(typeof entry === 'string' || typeof entry === 'undefined'
+            ? (entry !== undefined && entry.length > 0 ? { model: entry } : {})
+            : (entry.model.length > 0
+              ? { model: entry.model, ...(entry.provider && entry.provider.length > 0 ? { provider: entry.provider } : {}) }
+              : {})),
+        }
+        markInternalRequest(request)
+        return request
+      })
+      // Sampling schedule: parallel (default) fires every rollout at once;
+      // serial waits for each to settle first — safer for slow local models.
+      if (config.samplingMode === 'serial') {
+        const serial: (Rollout | undefined)[] = [anchor]
+        for (const request of sampled) {
+          if (!request) continue
+          serial.push(await start('slot rollout', () => deps.stream(request)))
+        }
+        collected = serial
+      } else {
+        const inflight: Promise<Rollout | undefined>[] = [Promise.resolve(anchor)]
+        for (const request of sampled) {
+          if (!request) continue
+          inflight.push(start('slot rollout', () => deps.stream(request)))
+        }
+        collected = await Promise.all(inflight)
       }
-      collected = serial
     } else {
-      const inflight: Promise<Rollout | undefined>[] = []
-      inflight.push(start('anchor rollout', lazyNext))
-      for (const request of sampled) {
-        if (!request) continue
-        inflight.push(start('slot rollout', () => deps.stream(request)))
-      }
-      collected = await Promise.all(inflight)
+      // Phase 0 shortcut — a tool-call / failed / empty anchor is a working
+      // turn, not a final answer: replay it verbatim, Best-of-N does not
+      // apply, no sampling was spent.
+      collected = anchor === undefined ? [] : [anchor]
     }
     const usable = collected.filter((rollout): rollout is Rollout => rollout !== undefined && rollout.usable)
     const dropped = collected.length - usable.length
@@ -469,7 +491,9 @@ export async function* orchestrate(
       const firstFinished = collected.find((rollout): rollout is Rollout => rollout !== undefined)
       if (firstFinished === undefined) throw new Error('bo-n: every rollout failed')
       const footer = config.showFooter
-        ? `⚡ Best-of-N skipped · ${String(collected.length)} sampled, only ${String(usable.length)} usable · returned as a plain answer · ${formatElapsed(Date.now() - startedAt)}`
+        ? (collected.length < config.nCandidates && anchor !== undefined && anchor === collected[0]
+          ? `⚡ Best-of-N skipped · this turn is not a final text answer (tool call / empty) · returned as-is · ${formatElapsed(Date.now() - startedAt)}`
+          : `⚡ Best-of-N skipped · ${String(collected.length)} sampled, only ${String(usable.length)} usable · returned as a plain answer · ${formatElapsed(Date.now() - startedAt)}`)
         : undefined
       yield* replayWithFooter(firstFinished.chunks, footer)
       return

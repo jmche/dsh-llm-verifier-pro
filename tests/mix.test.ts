@@ -23,7 +23,13 @@ async function collectSampledRequests(opts: {
     backend,
     verifierModel: 'opencode-go/deepseek-v4-flash',
   }
-  const next = (): AsyncIterable<StreamChunk> => (async function* () {})()
+  // Anchor must be a USABLE text answer for sampling to start at all.
+  const next = (): AsyncIterable<StreamChunk> => (async function* () {
+    yield { type: 'block-start', index: 0, blockType: 'text' } as never as StreamChunk
+    yield { type: 'text-delta', index: 0, text: 'anchor answer' } as never as StreamChunk
+    yield { type: 'block-end', index: 0, block: { type: 'text', text: 'anchor answer' } } as never as StreamChunk
+    yield { type: 'finish', reason: { kind: 'stop' } } as never as StreamChunk
+  })()
   const gen = orchestrate(stubbedDeps as never, {
     nCandidates: opts.nCandidates,
     samplingTemperature: 0.7,
