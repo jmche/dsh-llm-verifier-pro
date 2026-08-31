@@ -187,7 +187,7 @@ export class VerifierBackend {
       model: config.model,
       baseUrl,
       apiKey,
-      timeoutMs: config.timeoutMs ?? 60_000,
+      timeoutMs: config.timeoutMs ?? 300_000,
       maxConcurrency: Math.max(1, config.maxConcurrency ?? 8),
       deepseek,
       prefill: config.prefill ?? true,

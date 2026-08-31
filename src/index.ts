@@ -165,8 +165,8 @@ export const Config: z<Config> = z.object({
   boNCandidates: z.number().default(5),
   samplingTemperature: z.number().default(0.7),
   samplingMode: z.string().default('parallel'),
-  timeoutMsBoN: z.number().default(120_000),
-  verifyTimeoutMsBoN: z.number().default(90_000),
+  timeoutMsBoN: z.number().default(300_000),
+  verifyTimeoutMsBoN: z.number().default(300_000),
   showFooter: z.boolean().default(true),
   criteria: z.array(z.string()).default([]),
   boNPivots: z.number().default(2),
@@ -892,8 +892,8 @@ export function apply(ctx: Context, config: Config): void {
           const known = knownProvidersOf(ctx)
           return (raw ?? []).map((entry) => normalizeMixEntry(entry as ModelMixEntry, known)) as BoNConfig['mixModels']
         })(),
-        timeoutMs: sectionReader().timeoutMsBoN ?? cfg.timeoutMsBoN ?? 120_000,
-        verifyTimeoutMs: sectionReader().verifyTimeoutMsBoN ?? cfg.verifyTimeoutMsBoN ?? 90_000,
+        timeoutMs: sectionReader().timeoutMsBoN ?? cfg.timeoutMsBoN ?? 300_000,
+        verifyTimeoutMs: sectionReader().verifyTimeoutMsBoN ?? cfg.verifyTimeoutMsBoN ?? 300_000,
         // Rollout schedule: panel wins over config, config over the default.
         samplingMode: sectionReader().samplingMode === 'serial'
           ? 'serial'

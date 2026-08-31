@@ -260,9 +260,9 @@ plugin config wins over the built-in default:
 | `samplingTemperature` | `0.7` | both | Diversity temperature for the sampled candidates. |
 | `samplingMode` | `parallel` | both | Rollout schedule: `parallel` (all at once) or `serial` (one at a time). |
 | `boNModelMix` | `[]` | both | Model mix for non-anchor candidates; empty = same-model (follow the session). |
-| `timeoutMs` | `60000` | both | Per-request verifier HTTP timeout in ms. |
-| `timeoutMsBoN` | `120000` | both | Wall-clock budget for the sampling phase. |
-| `verifyTimeoutMsBoN` | `90000` | both | Wall-clock budget for the ranking phase. |
+| `timeoutMs` | `300000` | both | Per-request verifier HTTP timeout in ms. |
+| `timeoutMsBoN` | `300000` | both | Wall-clock budget for the sampling phase. |
+| `verifyTimeoutMsBoN` | `300000` | both | Wall-clock budget for the ranking phase. |
 | `showFooter` | `true` | both | Append the muted `⚡ Best-of-N …` footer under the winner. |
 | `criteria` | `[]` | both | Extra grading criteria appended to the comparison prompt. |
 | `boNPivots` | `2` | both | PPT pivot count `k`. |
