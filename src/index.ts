@@ -209,7 +209,10 @@ const SettingsSectionSchema = z.object({
   autoDegrade: z.boolean(),
   verifyTimeoutMs: z.number(),
   criteria: z.array(z.string()),
-  boNModelMix: z.array(z.union([z.string(), z.object({ provider: z.string(), model: z.string() })])).default([]),
+  // No schema default: `undefined` = "panel never set" (runtime falls back to
+  // plugin config), while an explicit `[]` from the panel = "no model mix"
+  // (follow the session model) and overrides the plugin config.
+  boNModelMix: z.array(z.union([z.string(), z.object({ provider: z.string(), model: z.string() })])).required(false),
 })
 
 /** A hot reader of the resolved settings section (re-read per call/turn). */
@@ -274,17 +277,23 @@ export function sectionReaderOf(ctx: Context, config: Config): SettingsSectionRe
       const base: Record<string, unknown> = {}
       // Plugin-config keys → settings-section keys (they differ: baseUrl →
       // baseURL, verifyTimeoutMsBoN → verifyTimeoutMs).
+      //
+      // `verifier` and `boNModelMix` are DELIBERATELY not forwarded into the
+      // settings base: those two are panel-overridable user choices. Forwarding
+      // them would make the panel's "Restore defaults / empty" fall back to the
+      // plugin-config value (e.g. a profile patch's model mix) instead of the
+      // bundle default (empty = follow the session). The runtime still falls
+      // back to the plugin config when the section is UNSET — but an explicit
+      // panel value (including an explicit empty mix) wins over it.
       const forward: Record<string, keyof Config> = {
         baseURL: 'baseUrl',
         apiKey: 'apiKey',
         model: 'model',
-        verifier: 'verifier',
         boN: 'boN',
         boNCandidates: 'boNCandidates',
         autoDegrade: 'autoDegrade',
         verifyTimeoutMs: 'verifyTimeoutMsBoN',
         criteria: 'criteria',
-        boNModelMix: 'boNModelMix',
       }
       for (const [sectionKey, configKey] of Object.entries(forward)) {
         if (config[configKey] !== undefined) base[sectionKey] = config[configKey]
@@ -422,7 +431,9 @@ export async function resolveBackend(
   // Preferred form: a `provider/model` route (Model mix semantics). The
   // endpoint and key env come from that provider's dsh configuration, not
   // from the user; empty → still follow the session / explicit 3-part config.
-  const routeText = ((config.verifier ?? '').trim() || (section.verifier ?? '').trim() || '')
+  // The PANEL (settings section) wins over the plugin config: a user who sets
+  // the verifier in the Web UI must override a profile-patch `verifier`.
+  const routeText = ((section.verifier ?? '').trim() || (config.verifier ?? '').trim() || '')
   let baseUrl = ''
   let apiKeyEnv = 'DEEPSEEK_API_KEY'
   let model = ''
@@ -849,11 +860,15 @@ export function apply(ctx: Context, config: Config): void {
         nCandidates: decision.nCandidates,
         samplingTemperature: cfg.samplingTemperature ?? 0.7,
         // Web panel wins over plugin config for the mix (hot re-read per turn).
-        // both layers are normalized: settings-document strings like
-        // `omni-chat/agnes/...` whose head is a real provider become explicit
-        // routes; anything else stays a full model id (conversation provider).
+        // `undefined` = panel never set → fall back to plugin config; an
+        // explicit `[]` from the panel = "no mix" (follow the session model)
+        // and OVERRIDES the plugin config. Both layers are normalized:
+        // settings-document strings like `omni-chat/agnes/...` whose head is a
+        // real provider become explicit routes; anything else stays a full
+        // model id (conversation provider).
         mixModels: (() => {
-          const raw = sectionReader().boNModelMix?.length ? sectionReader().boNModelMix : cfg.boNModelMix
+          const sectionMix = sectionReader().boNModelMix
+          const raw = sectionMix !== undefined ? sectionMix : cfg.boNModelMix
           const known = knownProvidersOf(ctx)
           return (raw ?? []).map((entry) => normalizeMixEntry(entry as ModelMixEntry, known)) as BoNConfig['mixModels']
         })(),

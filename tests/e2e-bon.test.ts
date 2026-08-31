@@ -66,11 +66,17 @@ const waterfallOf = (ctx: Context) =>
  * dsh's LlmRuntime. The inner adapter answers every forwarded request with a
  * plain-text stream so a sampled candidate is always "usable".
  */
-function harness(cfg: Partial<Config> = {}) {
+function harness(cfg: Partial<Config> = {}, sectionValue: Record<string, unknown> = {}) {
   const ctx = new Context()
   ;(ctx as unknown as { systemPrompt: unknown }).systemPrompt = { section: vi.fn() }
   const registered: unknown[] = []
   ;(ctx as unknown as { tools: unknown }).tools = { register: vi.fn((def: unknown) => registered.push(def)) }
+  // Settings seam: sectionReaderOf() lazily registers and hot-reads; in tests
+  // there is no settings service, so mock the register → get round-trip with a
+  // fixed section value (the panel's settings document).
+  ;(ctx as unknown as { settings: unknown }).settings = {
+    register: () => ({ get: () => sectionValue }),
+  }
   // Every request that re-enters the waterfall through the llm seam is
   // captured here (the anchor rides fireTurn's inner next(); candidates ride
   // ctx.llm.stream — so `sampled` holds exactly the candidate requests).
@@ -192,5 +198,30 @@ describe('Bo-N end-to-end through the llm/stream waterfall', () => {
     for await (const chunk of gen) out.push(chunk)
     expect(out.some((c) => c.type === 'text-delta')).toBe(true) // recovered, not dead
     expect(calls).toBe(2) // anchor threw once, normal path re-ran once
+  })
+
+  it('an explicit empty panel mix overrides a config model mix (follows the session)', async () => {
+    // config carries a model mix (like a profile patch), but the PANEL has an
+    // explicit empty mix — the panel wins, so candidates ride the anchor model.
+    const h = harness({ boNModelMix: ['ollama-local/mix-model'] }, { boNModelMix: [] })
+    const request = conversationRequest() // model = opencode-go/deepseek-v4-flash
+    const gen = waterfallOf(h.ctx)('llm/stream', request, () => textStream('plain anchor answer')) as AsyncIterable<StreamChunk>
+    for await (const _chunk of gen) { /* drain */ }
+    expect(h.sampled).toHaveLength(2)
+    for (const cand of h.sampled) {
+      expect(cand.model).toBe('opencode-go/deepseek-v4-flash') // anchor model, not mix-model
+      expect(cand.temperature).toBe(0.7)
+    }
+  })
+
+  it('an unset panel mix falls back to the config model mix', async () => {
+    // config carries a model mix; the panel never set one (undefined) → config
+    // still supplies the diversity models.
+    const h = harness({ boNModelMix: ['ollama-local/mix-model'] }, {})
+    const request = conversationRequest()
+    const gen = waterfallOf(h.ctx)('llm/stream', request, () => textStream('plain anchor answer')) as AsyncIterable<StreamChunk>
+    for await (const _chunk of gen) { /* drain */ }
+    expect(h.sampled).toHaveLength(2)
+    expect(h.sampled[0]!.model).toBe('ollama-local/mix-model') // config mix still applies
   })
 })

@@ -248,6 +248,26 @@ describe('resolveBackend (zero-config inheritance)', () => {
     expect(backend.config.baseUrl).toBe('https://gw.example/v1')
     expect(backend.config.model).toBe('deepseek-chat')
   })
+
+  it('panel verifier wins over the plugin-config verifier (panel overrides profile patch)', async () => {
+    const ctx = {
+      llm: { listProviders: () => [{ id: 'omni-chat', name: '' }] },
+      get: vi.fn((key: string) => {
+        if (key === 'settings') {
+          return { get: () => ({ providers: { 'omni-chat': { baseURL: 'https://gw.example/v1', apiKeyEnv: 'OMNI_CHAT_API_KEY' } } }) }
+        }
+        if (key === 'credentials') return { resolve: async () => ({ value: 'gw-key' }) }
+        return undefined
+      }),
+    } as never
+    const backend = await resolveBackend(
+      ctx,
+      { verifier: 'omni-chat/config-model' },       // plugin-config (profile patch)
+      { provider: 'omni-chat', model: 'x' } as never,
+      () => ({ verifier: 'omni-chat/panel-model' }), // panel setting
+    )
+    expect(backend.config.model).toBe('panel-model') // panel overrides config
+  })
 })
 describe('prefill gating (main response usable -> skip)', () => {
   it('skips prefill when the main response already carries a scoreable tag + logprobs', async () => {
