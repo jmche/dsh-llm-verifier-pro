@@ -176,39 +176,52 @@ export const Config: z<Config> = z.object({
 
 /** The settings section shape this plugin reads (and the Web UI panel writes). */
 export interface VerifierSettingsSection {
-  baseURL?: string
+  // ── Verifier endpoint (three-part, same names as Config) ──
+  baseUrl?: string
   apiKey?: string
   model?: string
   /** Verifier as a `provider/model` route; empty = follow the session model. */
   verifier?: string
-  /** Bo-N global switch. */
-  boN?: boolean
-  /** Global-tier candidates override. */
-  boNCandidates?: number
-  /** Rollout schedule: 'serial' to collect one-at-a-time; 'parallel' otherwise. */
-  samplingMode?: string
+  /** Per-request verifier timeout in ms (mirrors Config.timeoutMs). */
+  timeoutMs?: number
   /** Strict-mode switch: false = raise on endpoints without logprobs. */
   autoDegrade?: boolean
-  /** Verify-phase wall-clock budget in ms. */
-  verifyTimeoutMs?: number
-  /** Extra grading criteria for Bo-N comparison prompts. */
+  // ── Best-of-N (mirrors Config, same names) ──
+  boN?: boolean
+  boNCandidates?: number
+  samplingTemperature?: number
+  samplingMode?: string
+  timeoutMsBoN?: number
+  verifyTimeoutMsBoN?: number
+  showFooter?: boolean
   criteria?: string[]
-  /** Best-of-N model mix (full model ids or explicit provider/model routes). */
+  boNPivots?: number
+  boNSeed?: number
   boNModelMix?: Array<ModelMixEntry>
 }
 
-/** The settings section schema. boN/boNCandidates carry NO schema default: a default would masquerade as user-set and override the plugin-config row. */
+/** The settings section schema. Field NAMES mirror Config exactly, so the
+ * settings document and the plugin-config patch share one vocabulary. Only
+ * `verifier` and `boNModelMix` are optional (no default): `undefined` means
+ * "panel never set" → runtime falls back to plugin config, while an explicit
+ * value (including an explicit empty mix) overrides plugin config. */
 const SettingsSectionSchema = z.object({
-  baseURL: z.string().default(''),
+  baseUrl: z.string().default(''),
   apiKey: z.string().default(''),
   model: z.string().default(''),
   verifier: z.string().default(''),
-  boN: z.boolean(),
-  boNCandidates: z.number(),
-  samplingMode: z.string(),
-  autoDegrade: z.boolean(),
-  verifyTimeoutMs: z.number(),
-  criteria: z.array(z.string()),
+  timeoutMs: z.number().required(false),
+  autoDegrade: z.boolean().required(false),
+  boN: z.boolean().required(false),
+  boNCandidates: z.number().required(false),
+  samplingTemperature: z.number().required(false),
+  samplingMode: z.string().required(false),
+  timeoutMsBoN: z.number().required(false),
+  verifyTimeoutMsBoN: z.number().required(false),
+  showFooter: z.boolean().required(false),
+  criteria: z.array(z.string()).required(false),
+  boNPivots: z.number().required(false),
+  boNSeed: z.number().required(false),
   // No schema default: `undefined` = "panel never set" (runtime falls back to
   // plugin config), while an explicit `[]` from the panel = "no model mix"
   // (follow the session model) and overrides the plugin config.
@@ -275,8 +288,8 @@ export function sectionReaderOf(ctx: Context, config: Config): SettingsSectionRe
       // changed in the panel overrides them. Empty primitives stay empty so a
       // missing value reads as "unconfigured", never as a wrong default.
       const base: Record<string, unknown> = {}
-      // Plugin-config keys → settings-section keys (they differ: baseUrl →
-      // baseURL, verifyTimeoutMsBoN → verifyTimeoutMs).
+      // Plugin-config keys → settings-section keys. Field names now MATCH
+      // Config exactly (one shared vocabulary), so this is an identity map.
       //
       // `verifier` and `boNModelMix` are DELIBERATELY not forwarded into the
       // settings base: those two are panel-overridable user choices. Forwarding
@@ -285,18 +298,25 @@ export function sectionReaderOf(ctx: Context, config: Config): SettingsSectionRe
       // bundle default (empty = follow the session). The runtime still falls
       // back to the plugin config when the section is UNSET — but an explicit
       // panel value (including an explicit empty mix) wins over it.
-      const forward: Record<string, keyof Config> = {
-        baseURL: 'baseUrl',
-        apiKey: 'apiKey',
-        model: 'model',
-        boN: 'boN',
-        boNCandidates: 'boNCandidates',
-        autoDegrade: 'autoDegrade',
-        verifyTimeoutMs: 'verifyTimeoutMsBoN',
-        criteria: 'criteria',
-      }
-      for (const [sectionKey, configKey] of Object.entries(forward)) {
-        if (config[configKey] !== undefined) base[sectionKey] = config[configKey]
+      const forward: Array<keyof Config> = [
+        'baseUrl',
+        'apiKey',
+        'model',
+        'timeoutMs',
+        'autoDegrade',
+        'boN',
+        'boNCandidates',
+        'samplingTemperature',
+        'samplingMode',
+        'timeoutMsBoN',
+        'verifyTimeoutMsBoN',
+        'showFooter',
+        'criteria',
+        'boNPivots',
+        'boNSeed',
+      ]
+      for (const key of forward) {
+        if (config[key] !== undefined) base[key] = config[key]
       }
       scope = settings.register(settingsNamespace(config.settingsNs ?? 'verifier-pro'), SettingsSectionSchema, { base }) as unknown as { get(): unknown }
     } catch (error) {
@@ -413,7 +433,7 @@ export function sessionProviderEndpoint(ctx: Context, provider: string): { baseU
  *     `provider/model` string like the Model mix entries: endpoint + key env
  *     are read from dsh's provider config; a bare model id rides the session
  *     provider.
- *  2. three-part endpoint: config.baseUrl/apiKey/model → section.baseURL/
+ *  2. three-part endpoint: config.baseUrl/apiKey/model → section.baseUrl/
  *     apiKey/model → session provider endpoint → env chain.
  *  3. model falls back to the conversation's own model (any provider route).
  */
@@ -451,7 +471,7 @@ export async function resolveBackend(
   } else {
     baseUrl =
       (config.baseUrl ?? '').trim() ||
-      section.baseURL?.trim() ||
+      section.baseUrl?.trim() ||
       sessionEndpoint.baseUrl?.trim() ||
       process.env.OPENAI_BASE_URL?.trim() ||
       ''
@@ -470,7 +490,7 @@ export async function resolveBackend(
     model: model || undefined,
     baseUrl: baseUrl || undefined,
     apiKey,
-    timeoutMs: config.timeoutMs,
+    timeoutMs: section.timeoutMs ?? config.timeoutMs,
     maxConcurrency: config.maxConcurrency,
     deepseek,
     prefill: config.prefill,
@@ -858,7 +878,7 @@ export function apply(ctx: Context, config: Config): void {
       }
       const boNConfig: BoNConfig = {
         nCandidates: decision.nCandidates,
-        samplingTemperature: cfg.samplingTemperature ?? 0.7,
+        samplingTemperature: sectionReader().samplingTemperature ?? cfg.samplingTemperature ?? 0.7,
         // Web panel wins over plugin config for the mix (hot re-read per turn).
         // `undefined` = panel never set → fall back to plugin config; an
         // explicit `[]` from the panel = "no mix" (follow the session model)
@@ -872,16 +892,16 @@ export function apply(ctx: Context, config: Config): void {
           const known = knownProvidersOf(ctx)
           return (raw ?? []).map((entry) => normalizeMixEntry(entry as ModelMixEntry, known)) as BoNConfig['mixModels']
         })(),
-        timeoutMs: cfg.timeoutMsBoN ?? 120_000,
-        verifyTimeoutMs: sectionReader().verifyTimeoutMs ?? cfg.verifyTimeoutMsBoN ?? 90_000,
+        timeoutMs: sectionReader().timeoutMsBoN ?? cfg.timeoutMsBoN ?? 120_000,
+        verifyTimeoutMs: sectionReader().verifyTimeoutMsBoN ?? cfg.verifyTimeoutMsBoN ?? 90_000,
         // Rollout schedule: panel wins over config, config over the default.
         samplingMode: sectionReader().samplingMode === 'serial'
           ? 'serial'
           : (cfg.samplingMode === 'serial' ? 'serial' : 'parallel'),
-        showFooter: cfg.showFooter ?? true,
+        showFooter: sectionReader().showFooter ?? cfg.showFooter ?? true,
         criteria: sectionReader().criteria?.length ? sectionReader().criteria : cfg.criteria,
-        pivots: cfg.boNPivots ?? 2,
-        seed: cfg.boNSeed ?? 0,
+        pivots: sectionReader().boNPivots ?? cfg.boNPivots ?? 2,
+        seed: sectionReader().boNSeed ?? cfg.boNSeed ?? 0,
       }
       yield* orchestrate(
         {

@@ -246,6 +246,40 @@ vLLM/SGLang prefill pass so score tags land exactly at the label position.
     showFooter: true
 ```
 
+### Parameters (one vocabulary, two layers)
+
+Every user-tunable parameter uses the **same name** in the plugin config
+(`cordis.patch.yml`) and in the settings section (`~/.dsh/settings.yaml` →
+`verifier-pro:`). The settings section wins over the plugin config, and the
+plugin config wins over the built-in default:
+
+| Parameter | Default | Layer | Meaning |
+|---|---|---|---|
+| `boN` | `false` | both | Best-of-N master switch. An explicit `false` in the panel overrides everything. |
+| `boNCandidates` | `5` | both | Candidates sampled per text-answer turn. |
+| `samplingTemperature` | `0.7` | both | Diversity temperature for the sampled candidates. |
+| `samplingMode` | `parallel` | both | Rollout schedule: `parallel` (all at once) or `serial` (one at a time). |
+| `boNModelMix` | `[]` | both | Model mix for non-anchor candidates; empty = same-model (follow the session). |
+| `timeoutMs` | `60000` | both | Per-request verifier HTTP timeout in ms. |
+| `timeoutMsBoN` | `120000` | both | Wall-clock budget for the sampling phase. |
+| `verifyTimeoutMsBoN` | `90000` | both | Wall-clock budget for the ranking phase. |
+| `showFooter` | `true` | both | Append the muted `⚡ Best-of-N …` footer under the winner. |
+| `criteria` | `[]` | both | Extra grading criteria appended to the comparison prompt. |
+| `boNPivots` | `2` | both | PPT pivot count `k`. |
+| `boNSeed` | `0` | both | Seed for the tournament ring pass. |
+| `verifier` | `''` | both | Verifier as a `provider/model` route; empty = follow the session model. |
+| `autoDegrade` | `true` | both | Fall back to sampling scoring when the endpoint lacks logprobs. |
+| `baseUrl` / `apiKey` / `model` | `''` | both | Explicit verifier endpoint three-part; empty = follow the session. |
+| `maxConcurrency` | `8` | config | Max in-flight verifier calls. |
+| `deepseek` | auto | config | Force the DeepSeek call path. |
+| `prefill` | `true` | config | vLLM/SGLang score-tag prefill pass. |
+| `compare` / `select` / `track` | `true` | config | Register the three `verify_*` tools. |
+| `settingsNs` | `verifier-pro` | config | Settings namespace id. |
+
+Deployment-only parameters (`maxConcurrency`, `deepseek`, `prefill`,
+`compare`/`select`/`track`, `settingsNs`) live in the plugin config only — they
+are not user-facing settings.
+
 ## Development
 
 ```bash

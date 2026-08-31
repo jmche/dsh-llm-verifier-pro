@@ -187,7 +187,7 @@ describe('resolveBackend (zero-config inheritance)', () => {
         resolve: async () => ({ value: 'seam-key' }),
       })),
     } as never
-    const backend = await resolveBackend(ctx, {}, undefined, () => ({ baseURL: 'https://omni.example/v1', apiKey: 'credential:OMNI_CHAT_API_KEY' }))
+    const backend = await resolveBackend(ctx, {}, undefined, () => ({ baseUrl: 'https://omni.example/v1', apiKey: 'credential:OMNI_CHAT_API_KEY' }))
     expect(backend.config.baseUrl).toBe('https://omni.example/v1')
     expect(backend.config.apiKey).toBe('seam-key')
   })

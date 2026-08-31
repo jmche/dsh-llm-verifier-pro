@@ -132,24 +132,25 @@ export type ModelMixEntry = string | {
 export declare const Config: z<Config>;
 /** The settings section shape this plugin reads (and the Web UI panel writes). */
 export interface VerifierSettingsSection {
-    baseURL?: string;
+    baseUrl?: string;
     apiKey?: string;
     model?: string;
     /** Verifier as a `provider/model` route; empty = follow the session model. */
     verifier?: string;
-    /** Bo-N global switch. */
-    boN?: boolean;
-    /** Global-tier candidates override. */
-    boNCandidates?: number;
-    /** Rollout schedule: 'serial' to collect one-at-a-time; 'parallel' otherwise. */
-    samplingMode?: string;
+    /** Per-request verifier timeout in ms (mirrors Config.timeoutMs). */
+    timeoutMs?: number;
     /** Strict-mode switch: false = raise on endpoints without logprobs. */
     autoDegrade?: boolean;
-    /** Verify-phase wall-clock budget in ms. */
-    verifyTimeoutMs?: number;
-    /** Extra grading criteria for Bo-N comparison prompts. */
+    boN?: boolean;
+    boNCandidates?: number;
+    samplingTemperature?: number;
+    samplingMode?: string;
+    timeoutMsBoN?: number;
+    verifyTimeoutMsBoN?: number;
+    showFooter?: boolean;
     criteria?: string[];
-    /** Best-of-N model mix (full model ids or explicit provider/model routes). */
+    boNPivots?: number;
+    boNSeed?: number;
     boNModelMix?: Array<ModelMixEntry>;
 }
 /** A hot reader of the resolved settings section (re-read per call/turn). */
@@ -199,7 +200,7 @@ export declare function sessionProviderEndpoint(ctx: Context, provider: string):
  *     `provider/model` string like the Model mix entries: endpoint + key env
  *     are read from dsh's provider config; a bare model id rides the session
  *     provider.
- *  2. three-part endpoint: config.baseUrl/apiKey/model → section.baseURL/
+ *  2. three-part endpoint: config.baseUrl/apiKey/model → section.baseUrl/
  *     apiKey/model → session provider endpoint → env chain.
  *  3. model falls back to the conversation's own model (any provider route).
  */

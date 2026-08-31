@@ -322,14 +322,36 @@ window.__ModuleLoader__.load({
 								h("span", { className: "verifier-panel__custom" },
 									h("input", {
 										type: "number", min: 30, max: 600, step: 10,
-										value: String(Math.round((section.verifyTimeoutMs ?? 90000) / 1000)),
+										value: String(Math.round((section.verifyTimeoutMsBoN ?? 90000) / 1000)),
 										onChange: (event) => { setVerifyDraft(event.target.value); },
 										onBlur: () => {
 											const seconds = Math.min(600, Math.max(30, Number.parseInt(verifyDraft, 10) || 90));
-											scope.set("verifyTimeoutMs", seconds * 1000);
+											scope.set("verifyTimeoutMsBoN", seconds * 1000);
 										},
 									}),
 								),
+							),
+						),
+						h("h3", { className: "verifier-panel__section-title" }, "Sampling temperature"),
+						h("label", { className: "verifier-panel__option" },
+							h("input", { type: "checkbox", checked: false, style: { display: "none" } }),
+							h("div", { className: "verifier-panel__option-body" },
+								h("span", { className: "verifier-panel__option-hint" }, "Diversity temperature for the sampled candidates (0.0 = deterministic, higher = more diverse). Default 0.7."),
+								h("span", { className: "verifier-panel__custom" },
+									h("input", {
+										type: "number", min: 0, max: 2, step: 0.1,
+										value: String(section.samplingTemperature ?? 0.7),
+										onChange: (event) => scope.set("samplingTemperature", Number.parseFloat(event.target.value) || 0.7),
+									}),
+								),
+							),
+						),
+						h("h3", { className: "verifier-panel__section-title" }, "Answer footer"),
+						h("label", { className: "verifier-panel__option" + (section.showFooter !== false ? " verifier-panel__option--active" : ""), onClick: () => scope.set("showFooter", section.showFooter === false) },
+							h("input", { type: "checkbox", checked: section.showFooter !== false, onChange: () => scope.set("showFooter", section.showFooter === false), disabled: busy }),
+							h("div", { className: "verifier-panel__option-body" },
+								h("span", { className: "verifier-panel__option-label" }, "Show the Best-of-N footer"),
+								h("span", { className: "verifier-panel__option-hint" }, "Append the muted “⚡ Best-of-N …” line under the winning answer. Turn off to keep answers clean."),
 							),
 						),
 						h("h3", { className: "verifier-panel__section-title" }, "Rollout schedule"),
