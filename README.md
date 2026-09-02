@@ -1,18 +1,18 @@
 # dsh-llm-verifier-pro
 
-LLM-as-a-Verifier for DeepSeek Harness — one plugin that unifies the best of
-two independent implementations:
+[![License](https://img.shields.io/github/license/jmche/dsh-llm-verifier-pro)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-DeepSeek%20Harness-6a4cff)](https://github.com/deepseek-ai/dsh)
+[![Type](https://img.shields.io/badge/type-dsh%20plugin-2ea44f)]()
+[![Method](https://img.shields.io/badge/method-LLM--as--a--Verifier-ff6c37)]()
 
-- **`dsh-llm-as-a-verifier`** (TaurenMountain, MIT) — the engineering core:
-  fine-grained logprob scoring, Probabilistic Pivot Tournament, vLLM/SGLang
-  score-tag prefill, concurrency + timeout + cancellation + token accounting.
-- **`@aispin/plugin-verifier`** (Aispin, MIT) — the product surface: the
-  *Best-of-N conversation mode* (every assistant turn sampled N ways, only the
-  winner replayed) plus a Web settings panel with three-state gating.
+**给 DeepSeek Harness 加一个"验货员"：回答前先采样 N 个候选，用带小数点的 fine-grained 分数选出最优回放——而不是把模型的第一反应直接交给你。**
 
-Method: the LLM-as-a-Verifier paper — fine-grained reward as the expectation
-over the verifier's top-20 logprob distribution at the score position
-(arXiv:2607.05391).
+- **Best-of-N 对话模式**：每个文字回答采样 N 份，verifier 按预期分数排名，回放赢家，带一行 `⚡ Best-of-N` footer；
+- **三个 `verify_*` 工具**：`verify_compare` / `verify_select` / `verify_track`，让 agent 交差前自检、选最优、跟踪进度；
+- **论文方法**：fine-grained reward = verifier 在 `<score_A>` 位置的 top-20 logprob 分布期望（arXiv:2607.05391），配 Bradley–Terry + Probabilistic Pivot Tournament（O(N·k) 而非 O(N²)）；
+- **fail-open 到底**：采样超时、评分失败、端点缺 logprobs——全部优雅退化，绝不卡死回合。
+
+方法源自 LLM-as-a-Verifier（[arXiv:2607.05391](https://arxiv.org/abs/2607.05391)）；工程核心来自 `dsh-llm-as-a-verifier`（TaurenMountain）、产品层来自 `@aispin/plugin-verifier`（Aispin），均 MIT。
 
 ## Installation
 
@@ -284,7 +284,7 @@ are not user-facing settings.
 
 ```bash
 npm install
-npm run check      # typecheck + tests (79 tests)
+npm run check      # typecheck + tests (114 tests)
 npm run build      # tsc + copy client.js
 ```
 
