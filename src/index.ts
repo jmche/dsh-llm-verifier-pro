@@ -32,7 +32,6 @@ import type { JsonValue } from '@deepseek-ai/dsh-tools'
 import type { StreamChunk, GenerateOptions } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { VerifierBackend, type BackendConfig } from './backend.js'
 import { Verifier, type CompareOptions, type SelectOptions, type TrackOptions } from './verifier.js'
 import type { TokenUsageSnapshot } from './backend.js'
@@ -318,7 +317,7 @@ export function sectionReaderOf(ctx: Context, config: Config): SettingsSectionRe
       for (const key of forward) {
         if (config[key] !== undefined) base[key] = config[key]
       }
-      scope = settings.register(settingsNamespace(config.settingsNs ?? 'verifier-pro'), SettingsSectionSchema, { base }) as unknown as { get(): unknown }
+      scope = settings.register(config.settingsNs ?? 'verifier-pro', SettingsSectionSchema, { base }) as unknown as { get(): unknown }
     } catch (error) {
       // Duplicate registration (or a schema conflict) — degrade to explicit config.
       console.error(`[verifier-pro] settings namespace registration failed (${error instanceof Error ? error.message : String(error)}); falling back to explicit config only`)
@@ -403,7 +402,7 @@ export function sessionProviderEndpoint(ctx: Context, provider: string): { baseU
     const settings = ctx.get('settings') as { get(ns: unknown): unknown } | undefined
     if (!settings) return {}
     for (const nsName of ['llm-pi-ai', `llm-${provider}`]) {
-      const section = settings.get(settingsNamespace(nsName)) as Record<string, unknown> | undefined
+      const section = settings.get(nsName) as Record<string, unknown> | undefined
       if (!section || typeof section !== 'object') continue
       const providers = (section.providers ?? {}) as Record<string, { baseURL?: string; apiKeyEnv?: string }>
       const entry = providers[provider]
