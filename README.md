@@ -42,7 +42,6 @@ the profile's patch layer (see [Configuration](#configuration) below), restart
 `dsh web`, and the plugin exposes:
 
 - three `verify_*` tools to every agent;
-- the `verifier-pro` settings section in the Web UI (Best-of-N panel);
 - the optional Best-of-N conversation mode (off by default).
 
 Full walkthrough: [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md).
@@ -73,31 +72,26 @@ would waste tokens and produce unusable candidates. The decision is
 re-evaluated per turn and is deliberately **all-or-nothing — the mode covers
 every conversation, there is no per-session tier**:
 
-| Layer | Switch |
-|---|---|
-| Settings (Web UI panel) | `boN: true` / `boN: false` — an explicit **Off** is the master kill-switch and overrides the config default |
-| Config default | `boN: true` in the plugin config (only when the section is unset) |
+It is one switch: `boN: true` in the plugin config turns the mode on for every
+conversation at `boNCandidates`; anything else is off.
 
-> **Behavior change:** a `bo-n` session preset in the dsh session UI no longer
-> has any effect — the mode is all-or-nothing. If you previously opted
-> specific sessions in via a preset, enable the mode globally instead (or
-> scope it per profile).
+> **Behavior change (dsh 0.1.7):** there is no settings layer above the plugin
+> config any more, and no `bo-n` session preset. The plugin config is the only
+> place the switch lives — see [Configuration](#configuration).
 
 **Model mix (candidate diversity).** Candidate 0 always rides the
 conversation's own model (the greedy anchor). Each later slot draws a
 `{ provider, model }` entry from `boNModelMix` in order; slots beyond the list
 fall back to anchor-model variants at the sampling temperature. Configure it in
-the patch layer, or live from the Web settings panel (the `verifier-pro`
-section has a dedicated editor — one `provider/model` per line; a line without
-`/` is a full model id on the conversation's provider).
+the patch layer.
 
 `provider` is a REAL dsh provider route (`omni-chat`, `omni-message`,
 `deepseek-official`…); `model` is the FULL model id exactly as that provider
 advertises it (possibly containing its own `/`, e.g. `agnes/agnes-2.5-flash`).
-The panel splits each line at its FIRST `/` — so a model id that itself
-contains `/` (e.g. `ollama-local/qwen3.8:27b`) MUST be written with its real
-provider (`omni-chat/ollama-local/qwen3.8:27b`) in the panel; only a model id
-WITHOUT `/` can ride the conversation's provider as a bare line.
+A string entry is split at its FIRST `/` — so a model id that itself contains
+`/` (e.g. `ollama-local/qwen3.8:27b`) MUST be written with its real provider
+(`omni-chat/ollama-local/qwen3.8:27b`); only a model id WITHOUT `/` can ride
+the conversation's provider as a bare string.
 
 ```yaml
 boNModelMix:
@@ -112,74 +106,6 @@ boNModelMix:
 Every failed path fails **open**: a sampling overrun degrades Bo5 → Bo-K →
 a normal answer, with a muted footer explaining what happened. Never a dead
 turn.
-
-The switch, candidate counts, verify budget and model mix are all editable
-live from the Web settings panel — see
-[Web settings panel](#web-settings-panel-best-of-n).
-
-## Web settings panel (Best-of-N)
-
-The dsh Web UI exposes one settings section (`verifier-pro` → **Best-of-N**).
-Every control writes the settings document and applies to the **very next
-turn** — no restart. The per-turn decision is `resolveBoNMode` (settings →
-config default → off) and it is **all-or-nothing**: the mode applies to every
-conversation; there is **no per-session tier**.
-
-### Current effect (live banner)
-
-A status banner at the top of the panel states the actual outcome of the
-current settings in plain English — there is no "which sessions" question
-left to guess:
-
-- `Best-of-N is ON for every conversation · 5-way`
-- `Best-of-N is OFF for every conversation`
-
-### Best-of-N mode (the whole decision)
-
-- **Off** — writes `boN: false`. The master kill-switch: nothing is sampled,
-  and it overrides the config default too.
-- **Fast · 3-way** — `boN: true`, `boNCandidates: 3`. ≈2–3× tokens, ≈2×
-  latency.
-- **Accurate · 5-way** — `boN: true`, `boNCandidates: 5`. ≈3–5× tokens,
-  2–4× latency (≈16 model calls — the paper's Bo5).
-- **Custom** — `boN: true`, `boNCandidates: N`, with N clamped to 2–8.
-
-### Advanced settings (folded by default)
-
-- **Verify timeout (seconds)** — independent wall-clock budget for the
-  **ranking phase only** (default 90 s, range 30–600). Sampling is budgeted
-  separately (`timeoutMsBoN`). On timeout the turn degrades to a plain answer
-  with a footer note.
-- **Rollout schedule** — Parallel (default): all candidates fire at once,
-  fastest on fast models. Serial: one candidate at a time, safer when several
-  candidates share one slow local model.
-- **Verifier (scoring model)** — the single model that grades every candidate
-  pair. One line, **same rule as the Model mix**: `provider/model` looks the
-  endpoint and API key up from dsh's provider configuration (no base URL to
-  type); a bare model id without `/` rides the session's provider. Empty →
-  **follows the session model** (zero-config default, the paper's
-  self-verification). The resolved endpoint must return token-level logprobs.
-- **Model mix (candidate diversity)** — textarea, one entry per line:
-  `provider/model` names an explicit provider route (split at the **first**
-  `/`); a bare model id with no `/` rides the conversation's provider.
-  Candidate 0 is always the conversation's model (greedy anchor); slots
-  1..N−1 fill from the list in order; slots beyond the list fall back to
-  anchor-model variants at the sampling temperature.
-  - **Save model mix** parses and writes `boNModelMix` (momentary "Saved ✓"
-    feedback); **Restore config defaults** empties the section value (the
-    plugin-config base re-applies); the **Available models** badges
-    click-to-append with an explicit provider route.
-- **Auto-degrade when the endpoint lacks logprobs** — ON (default): when the
-  endpoint returns no token-level logprobs, grading falls back to sampling
-  the score letter, and the turn footer marks "sampling scoring" (slightly
-  less precise). OFF: strict mode — unsupported endpoints surface the error
-  directly and Bo-N turns return as plain answers; never a silent downgrade.
-
-### How do I know it's running?
-
-Every Best-of-N turn appends a muted footer to the answer — "⚡ Best-of-N ·
-5-choose-1 → …" — with the tier, elapsed time and token use; the server
-console also logs `[bo-n] mode: …` per turn.
 
 ## Faithfulness to the paper
 
@@ -222,18 +148,18 @@ Documented deviations vs. the official repo / paper — none changes the method:
 
 ## Configuration
 
-**Zero-config default:** with no explicit `baseUrl` / `apiKey` / `model` (and
-the panel's Verifier fields empty), the verifier **follows the session** —
+**Zero-config default:** with no explicit `baseUrl` / `apiKey` / `model`, the
+verifier **follows the session** —
 same provider route, endpoint and model as the conversation. Turning on
 Best-of-N alone gives the paper's *self-verification* experience: candidates
 are sampled as variants of the conversation's own model, and that same model
-grades them. The endpoint for the session provider is read from its settings
-namespace (`llm-pi-ai.providers.<name>` style). Only when the session
-provider is unknown does the resolution fall back to:
+grades them. The endpoint for the session provider is read from that adapter's
+own Loader entry config (`llm-pi-ai` style, `providers.<name>.baseURL`), through
+the `configEditor` service. Only when the session provider is unknown does the
+resolution fall back to:
 
-plugin config → the `verifier` settings section →
-session provider endpoint → `OPENAI_BASE_URL` / `OPENAI_API_KEY` /
-`DEEPSEEK_API_KEY` → `api.deepseek.com`.
+plugin config → session provider endpoint → `OPENAI_BASE_URL` /
+`OPENAI_API_KEY` / `DEEPSEEK_API_KEY` → `api.deepseek.com`.
 
 The verifier must sit on an endpoint that returns **token-level logprobs**
 (vLLM, SGLang, OpenAI, DeepSeek, and modern Ollama all do; a plain gateway
@@ -249,52 +175,50 @@ vLLM/SGLang prefill pass so score tags land exactly at the label position.
     baseUrl: https://your-gateway/v1
     apiKey: credential:YOUR_API_KEY_ENV
     model: opencode-go/deepseek-v4-flash
-    boN: false          # master switch — the Web panel or this line turns it on; an explicit Off wins over everything
+    boN: false          # master switch — this line is the only place it lives
     boNCandidates: 5
     samplingMode: parallel   # rollouts per turn: 'parallel' (default) fires N at once; 'serial' waits one-at-a-time (safer when several candidates share one slow local model)
     showFooter: true
 ```
 
-### Parameters (one vocabulary, two layers)
+### Parameters
 
-Every user-tunable parameter uses the **same name** in the plugin config
-(`cordis.patch.yml`) and in the settings section (`~/.dsh/settings.yaml` →
-`verifier-pro:`). The settings section wins over the plugin config, and the
-plugin config wins over the built-in default:
+Every parameter lives in the plugin config (the profile's `cordis.patch.yml`)
+and overrides the built-in default. Since dsh 0.1.7 that is the only layer:
+`~/.dsh/settings.yaml` no longer exists (dsh imported it into the profile patch
+and renamed it `settings.yaml.imported`).
 
-| Parameter | Default | Layer | Meaning |
-|---|---|---|---|
-| `boN` | `false` | both | Best-of-N master switch. An explicit `false` in the panel overrides everything. |
-| `boNCandidates` | `5` | both | Candidates sampled per text-answer turn. |
-| `samplingTemperature` | `0.7` | both | Diversity temperature for the sampled candidates. |
-| `samplingMode` | `parallel` | both | Rollout schedule: `parallel` (all at once) or `serial` (one at a time). |
-| `boNModelMix` | `[]` | both | Model mix for non-anchor candidates; empty = same-model (follow the session). |
-| `timeoutMs` | `300000` | both | Per-request verifier HTTP timeout in ms. |
-| `timeoutMsBoN` | `300000` | both | Wall-clock budget for the sampling phase. |
-| `verifyTimeoutMsBoN` | `300000` | both | Wall-clock budget for the ranking phase. |
-| `showFooter` | `true` | both | Append the muted `⚡ Best-of-N …` footer under the winner. |
-| `criteria` | `[]` | both | Extra grading criteria appended to the comparison prompt. |
-| `boNPivots` | `2` | both | PPT pivot count `k`. |
-| `boNSeed` | `0` | both | Seed for the tournament ring pass. |
-| `verifier` | `''` | both | Verifier as a `provider/model` route; empty = follow the session model. |
-| `autoDegrade` | `true` | both | Fall back to sampling scoring when the endpoint lacks logprobs. |
-| `baseUrl` / `apiKey` / `model` | `''` | both | Explicit verifier endpoint three-part; empty = follow the session. |
-| `maxConcurrency` | `8` | config | Max in-flight verifier calls. |
-| `deepseek` | auto | config | Force the DeepSeek call path. |
-| `prefill` | `true` | config | vLLM/SGLang score-tag prefill pass. |
-| `compare` / `select` / `track` | `true` | config | Register the three `verify_*` tools. |
-| `settingsNs` | `verifier-pro` | config | Settings namespace id. |
+| Parameter | Default | Meaning |
+|---|---|---|
+| `boN` | `false` | Best-of-N master switch. |
+| `boNCandidates` | `5` | Candidates sampled per text-answer turn. |
+| `samplingTemperature` | `0.7` | Diversity temperature for the sampled candidates. |
+| `samplingMode` | `parallel` | Rollout schedule: `parallel` (all at once) or `serial` (one at a time). |
+| `boNModelMix` | `[]` | Model mix for non-anchor candidates; empty = same-model (follow the session). |
+| `timeoutMs` | `300000` | Per-request verifier HTTP timeout in ms. |
+| `timeoutMsBoN` | `300000` | Wall-clock budget for the sampling phase. |
+| `verifyTimeoutMsBoN` | `300000` | Wall-clock budget for the ranking phase. |
+| `showFooter` | `true` | Append the muted `⚡ Best-of-N …` footer under the winner. |
+| `criteria` | `[]` | Extra grading criteria appended to the comparison prompt. |
+| `boNPivots` | `2` | PPT pivot count `k`. |
+| `boNSeed` | `0` | Seed for the tournament ring pass. |
+| `verifier` | `''` | Verifier as a `provider/model` route; empty = follow the session model. |
+| `autoDegrade` | `true` | Fall back to sampling scoring when the endpoint lacks logprobs. |
+| `baseUrl` / `apiKey` / `model` | `''` | Explicit verifier endpoint three-part; empty = follow the session. |
+| `maxConcurrency` | `8` | Max in-flight verifier calls. |
+| `deepseek` | auto | Force the DeepSeek call path. |
+| `prefill` | `true` | vLLM/SGLang score-tag prefill pass. |
+| `compare` / `select` / `track` | `true` | Register the three `verify_*` tools. |
 
-Deployment-only parameters (`maxConcurrency`, `deepseek`, `prefill`,
-`compare`/`select`/`track`, `settingsNs`) live in the plugin config only — they
-are not user-facing settings.
+`maxConcurrency`, `deepseek`, `prefill` and `compare`/`select`/`track` are
+deployment knobs rather than things a user tunes per turn.
 
 ## Development
 
 ```bash
 npm install
-npm run check      # typecheck + tests (114 tests)
-npm run build      # tsc + copy client.js
+npm run check      # typecheck + tests (110 tests)
+npm run build      # tsc
 ```
 
 ## License

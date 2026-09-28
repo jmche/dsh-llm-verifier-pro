@@ -4,8 +4,7 @@
  * Merges the engineering of dsh-llm-as-a-verifier (TaurenMountain, MIT) —
  * fine-grained logprob scoring, Probabilistic Pivot Tournament, vLLM/SGLang
  * prefill, concurrency + timeout + token accounting — with the Best-of-N
- * conversation mode and Web settings panel of @aispin/plugin-verifier
- * (Aispin, MIT). Method by the LLM-as-a-Verifier paper (arXiv:2607.05391).
+ * conversation mode of @aispin/plugin-verifier (Aispin, MIT). Method by the LLM-as-a-Verifier paper (arXiv:2607.05391).
  *
  * Three faces:
  *  1. Tools — `verify_compare` / `verify_select` / `verify_track` (agent calls
@@ -13,12 +12,11 @@
  *  2. Service — `ctx.verifierPro.verify/compare/select/track` for code consumers.
  *  3. Mode — Best-of-N conversation mode: every assistant turn of a Bo-N
  *     session is sampled N ways and only the winning response replayed.
- *     Three-state gating: settings global (Web UI switch) → session preset →
- *     config default → off.
+ *     Gating: `config.boN` → off.
  *
  * Verifier credentials resolve zero-config from the dsh provider state:
- * plugin config (baseUrl/apiKey/model) → the `verifier` settings namespace →
- * the credentials seam (`credential:<name>` or the ambient key env) →
+ * plugin config (baseUrl/apiKey/model) → the provider route's own Loader entry
+ * config (read through `configEditor`) → the credentials seam (`credential:<name>` or the ambient key env) →
  * OPENAI_BASE_URL/OPENAI_API_KEY/DEEPSEEK_API_KEY.
  *
  * @module dsh-llm-verifier-pro
@@ -70,11 +68,11 @@ export const inject = ['tools', 'systemPrompt', 'llm'] as const
 /** Plugin configuration (dsh config cascade). */
 export interface Config {
   // ── verifier endpoint (shared by the tool, service and Bo-N faces) ──
-  /** OpenAI-compatible base URL. Empty (default) resolves: settings section → OPENAI_BASE_URL → DEEPSEEK_API_KEY implies api.deepseek.com. */
+  /** OpenAI-compatible base URL. Empty (default) resolves: session provider route → OPENAI_BASE_URL → DEEPSEEK_API_KEY implies api.deepseek.com. */
   baseUrl?: string
-  /** API key. Supports `credential:<name>` (dsh credentials seam), `env:VAR`, or a plain value. Empty → settings section → seam/ambient env. */
+  /** API key. Supports `credential:<name>` (dsh credentials seam), `env:VAR`, or a plain value. Empty → seam/ambient env. */
   apiKey?: string
-  /** Verifier model. Empty → settings section → the conversation's model (DeepSeek routes only) → deepseek-v4-flash, or /models on non-DeepSeek endpoints. */
+  /** Verifier model. Empty → the conversation's model (DeepSeek routes only) → deepseek-v4-flash, or /models on non-DeepSeek endpoints. */
   model?: string
   /**
    * Verifier as a `provider/model` ROUTE (preferred): endpoint and API key are
@@ -140,8 +138,6 @@ export interface Config {
    *   - `{ provider, model }` — sampled with an EXPLICIT provider route
    *     (e.g. `{ provider: 'omni-message', model: 'opencode-go/minimax-m3' }`),
    *     overriding the conversation's provider for that candidate only.
-   *
-   * Configurable in the Web settings panel (verifier-pro section) too.
    */
   boNModelMix?: Array<ModelMixEntry>
 }
@@ -178,43 +174,10 @@ export const Config: z<Config> = z.object({
   boNModelMix: z.array(z.union([z.string(), z.object({ provider: z.string(), model: z.string() })])).default([]),
 })
 
-/** The settings section shape this plugin reads (and the Web UI panel writes). */
-export interface VerifierSettingsSection {
-  // ── Verifier endpoint (three-part, same names as Config) ──
-  baseUrl?: string
-  apiKey?: string
-  model?: string
-  /** Verifier as a `provider/model` route; empty = follow the session model. */
-  verifier?: string
-  /** Per-request verifier timeout in ms (mirrors Config.timeoutMs). */
-  timeoutMs?: number
-  /** Strict-mode switch: false = raise on endpoints without logprobs. */
-  autoDegrade?: boolean
-  // ── Best-of-N (mirrors Config, same names) ──
-  boN?: boolean
-  boNCandidates?: number
-  samplingTemperature?: number
-  samplingMode?: string
-  timeoutMsBoN?: number
-  verifyTimeoutMsBoN?: number
-  showFooter?: boolean
-  criteria?: string[]
-  boNPivots?: number
-  boNSeed?: number
-  boNModelMix?: Array<ModelMixEntry>
-}
-
-
-/** A hot reader of the resolved settings section (re-read per call/turn). */
-export type SettingsSectionReader = () => VerifierSettingsSection
 
 /**
  * Normalize one model-mix value to the runtime entry shape (`string` or
- * `{ provider, model }`). Values may arrive from three places with three
- * dialects:
- *   - plugin config (object or string; exact),
- *   - the settings document (object, string, or legacy `provider/model` text),
- *   - the Web panel (parsed already).
+ * `{ provider, model }`). A plugin-config value may be an object or a string.
  * A legacy `omni-chat/agnes/agnes-2.5-flash` string whose head is a REAL
  * provider name is split into `{ provider, model }`; anything else stays a
  * full model id (inherits the conversation provider).
@@ -262,7 +225,7 @@ function resolveApiKeyOverride(raw: string): string {
 }
 
 /** Resolve one API key from the full chain. */
-async function resolveApiKey(ctx: Context, config: Config, section: VerifierSettingsSection, apiKeyEnv: string): Promise<string | undefined> {
+async function resolveApiKey(ctx: Context, config: Config, apiKeyEnv: string): Promise<string | undefined> {
   const explicit = (config.apiKey ?? '').trim()
   if (explicit.length > 0) {
     if (explicit.startsWith('credential:')) {
@@ -273,17 +236,6 @@ async function resolveApiKey(ctx: Context, config: Config, section: VerifierSett
       return hit.value
     }
     return resolveApiKeyOverride(explicit)
-  }
-  if (section.apiKey?.trim().length) {
-    const sectionKey = section.apiKey.trim()
-    if (sectionKey.startsWith('credential:')) {
-      const credentials = ctx.get('credentials')
-      const ref = credentialRef(sectionKey.slice('credential:'.length))
-      const hit = credentials === undefined ? undefined : await credentials.resolve(ref)
-      if (hit === undefined) throw new Error(`verifier: credential "${sectionKey.slice('credential:'.length)}" is not configured`)
-      return hit.value
-    }
-    return sectionKey
   }
   const credentials = ctx.get('credentials')
   const ref = credentialRef(apiKeyEnv)
@@ -304,20 +256,36 @@ async function resolveApiKey(ctx: Context, config: Config, section: VerifierSett
 export function sessionProviderEndpoint(ctx: Context, provider: string): { baseUrl?: string; apiKeyEnv?: string } {
   if (!provider) return {}
   try {
-    const settings = ctx.get('settings') as { get(ns: unknown): unknown } | undefined
-    if (!settings) return {}
-    for (const nsName of ['llm-pi-ai', `llm-${provider}`]) {
-      const section = settings.get(nsName) as Record<string, unknown> | undefined
-      if (!section || typeof section !== 'object') continue
+    // An adapter's route table lives in its Loader entry's config, so that entry
+    // is the authority and this reads it rather than keeping a copy. Until dsh
+    // 0.1.7 the same values were reachable as `settings.get('llm-pi-ai')`; that
+    // API is gone (SettingsForms has no `get`), and the settings document itself
+    // moved into the profile patch the Loader already composes from.
+    const editor = ctx.get('configEditor') as { entries(): Array<{ options: { id: string; config?: unknown } }> } | undefined
+    if (!editor) return {}
+    const flat: Array<{ baseURL?: string; apiKeyEnv?: string }> = []
+    for (const entry of editor.entries()) {
+      const config = entry.options.config
+      if (config === null || typeof config !== 'object') continue
+      const section = config as Record<string, unknown>
+      // Multi-route adapters (pi-ai shape) key their table by route name. Matching
+      // on the table rather than on the entry id is deliberate: entry ids are the
+      // user's own labels in the profile patch, so the old code's `llm-${provider}`
+      // namespace guess could never have found a route named e.g. `omni-chat`.
       const providers = (section.providers ?? {}) as Record<string, { baseURL?: string; apiKeyEnv?: string }>
-      const entry = providers[provider]
-      if (entry && typeof entry.baseURL === 'string' && entry.baseURL.length > 0) {
-        return { baseUrl: entry.baseURL, apiKeyEnv: typeof entry.apiKeyEnv === 'string' ? entry.apiKeyEnv : undefined }
+      const route = providers[provider]
+      if (route && typeof route.baseURL === 'string' && route.baseURL.length > 0) {
+        return { baseUrl: route.baseURL, apiKeyEnv: typeof route.apiKeyEnv === 'string' ? route.apiKeyEnv : undefined }
       }
-      if (nsName === `llm-${provider}` && typeof section.baseURL === 'string' && section.baseURL.length > 0) {
-        return { baseUrl: section.baseURL, apiKeyEnv: typeof section.apiKeyEnv === 'string' ? section.apiKeyEnv : undefined }
+      // Single-route adapters carry a flat baseURL. Only the entry id ties one to
+      // a provider name, so this keeps the old id convention -- but as a second
+      // pass, so a real route table always wins over a naming coincidence.
+      if (entry.options.id === `llm-${provider}` && typeof section.baseURL === 'string' && section.baseURL.length > 0) {
+        flat.push({ baseURL: section.baseURL, apiKeyEnv: typeof section.apiKeyEnv === 'string' ? section.apiKeyEnv : undefined })
       }
     }
+    const fallback = flat[0]
+    if (fallback?.baseURL !== undefined) return { baseUrl: fallback.baseURL, apiKeyEnv: fallback.apiKeyEnv }
   } catch {
     // degrade: fall through to the environment chain
   }
@@ -326,38 +294,32 @@ export function sessionProviderEndpoint(ctx: Context, provider: string): { baseU
 
 /**
  * Resolve the verifier backend connection from dsh's configured provider
- * state. Default (no explicit config, no panel Verifier route and no
+ * state. Default (no explicit config, no `verifier` route and no
  * three-part endpoint): the verifier FOLLOWS THE SESSION — same provider
  * route, endpoint and model as the conversation, so a user who only turns on
  * Best-of-N gets the zero-config self-verification experience (generate N
  * variants and grade them all with the conversation's own model).
  *
  * Resolution order:
- *  1. `verifier` route (config.verifier / section.verifier) — a
- *     `provider/model` string like the Model mix entries: endpoint + key env
- *     are read from dsh's provider config; a bare model id rides the session
- *     provider.
- *  2. three-part endpoint: config.baseUrl/apiKey/model → section.baseUrl/
- *     apiKey/model → session provider endpoint → env chain.
+ *  1. `config.verifier` route — a `provider/model` string like the Model mix
+ *     entries: endpoint + key env are read from that provider's Loader entry
+ *     config; a bare model id rides the session provider.
+ *  2. three-part endpoint: config.baseUrl/apiKey/model → session provider
+ *     endpoint → env chain.
  *  3. model falls back to the conversation's own model (any provider route).
  */
 export async function resolveBackend(
   ctx: Context,
   config: Config,
   conversation?: GenerateOptions,
-  sectionReader: SettingsSectionReader = () => ({}),
 ): Promise<VerifierBackend> {
-  const section = sectionReader()
-
   const provider = conversation?.provider ?? ''
   const sessionEndpoint = provider ? sessionProviderEndpoint(ctx, provider) : {}
 
   // Preferred form: a `provider/model` route (Model mix semantics). The
   // endpoint and key env come from that provider's dsh configuration, not
   // from the user; empty → still follow the session / explicit 3-part config.
-  // The PANEL (settings section) wins over the plugin config: a user who sets
-  // the verifier in the Web UI must override a profile-patch `verifier`.
-  const routeText = ((section.verifier ?? '').trim() || (config.verifier ?? '').trim() || '')
+  const routeText = (config.verifier ?? '').trim()
   let baseUrl = ''
   let apiKeyEnv = 'DEEPSEEK_API_KEY'
   let model = ''
@@ -375,30 +337,29 @@ export async function resolveBackend(
   } else {
     baseUrl =
       (config.baseUrl ?? '').trim() ||
-      section.baseUrl?.trim() ||
       sessionEndpoint.baseUrl?.trim() ||
       process.env.OPENAI_BASE_URL?.trim() ||
       ''
     if (baseUrl.length === 0) baseUrl = ''
     apiKeyEnv = sessionEndpoint.apiKeyEnv ?? apiKeyEnv
     const inheritedModel = conversation?.model ?? ''
-    model = (config.model ?? '').trim() || section.model?.trim() || inheritedModel || ''
+    model = (config.model ?? '').trim() || inheritedModel || ''
   }
 
   if (baseUrl.length === 0 && process.env.DEEPSEEK_API_KEY?.trim()) baseUrl = 'https://api.deepseek.com'
 
-  const apiKey = await resolveApiKey(ctx, config, section, apiKeyEnv)
+  const apiKey = await resolveApiKey(ctx, config, apiKeyEnv)
   const deepseek = config.deepseek ?? baseUrl.includes('api.deepseek.com')
 
   const backendConfig: BackendConfig = {
     model: model || undefined,
     baseUrl: baseUrl || undefined,
     apiKey,
-    timeoutMs: section.timeoutMs ?? config.timeoutMs,
+    timeoutMs: config.timeoutMs,
     maxConcurrency: config.maxConcurrency,
     deepseek,
     prefill: config.prefill,
-    autoDegrade: section.autoDegrade ?? config.autoDegrade ?? true,
+    autoDegrade: config.autoDegrade ?? true,
   }
   console.error(
     `[verifier] backend resolved: baseUrl=${baseUrl || '(session endpoint)'} ` +
@@ -411,26 +372,19 @@ export async function resolveBackend(
 export interface BoNModeDecision {
   readonly enabled: boolean
   readonly nCandidates: number
-  readonly source: 'settings-global' | 'config-default' | 'off'
+  readonly source: 'config-default' | 'off'
 }
 
 /**
- * The Bo-N mode decision, evaluated per turn (hot): settings global →
- * config default → off.
+ * The Bo-N mode decision, evaluated per turn (hot).
  *
- * The panel's explicit switch is the whole story: `boN: true` turns the mode
- * on for EVERY conversation at the section's candidate count, and an explicit
- * `boN: false` is the master kill-switch that also overrides the config
- * default. Only an unset section falls through to the deployment default
- * (`config.boN`).
+ * Since dsh 0.1.7 the plugin Config is the only settings layer, so this is one
+ * switch: `config.boN: true` turns the mode on for EVERY conversation at
+ * `config.boNCandidates`, anything else is off.
  */
-export function resolveBoNMode(config: Config, sectionReader: SettingsSectionReader = () => ({})): BoNModeDecision {
-  const section = sectionReader()
-  const nCandidates = section.boNCandidates ?? config.boNCandidates ?? 5
-  // ① Settings global — the Web UI switch.
-  if (section.boN === true) return { enabled: true, nCandidates, source: 'settings-global' }
-  // ② Config deployment default.
-  if (section.boN !== false && config.boN) return { enabled: true, nCandidates, source: 'config-default' }
+export function resolveBoNMode(config: Config): BoNModeDecision {
+  const nCandidates = config.boNCandidates ?? 5
+  if (config.boN) return { enabled: true, nCandidates, source: 'config-default' }
   return { enabled: false, nCandidates: 0, source: 'off' }
 }
 
@@ -439,18 +393,16 @@ export function resolveBoNMode(config: Config, sectionReader: SettingsSectionRea
  * plugins coexist in one profile. */
 export class VerifierService extends Service {
   private readonly config: Config
-  private readonly sectionReader: SettingsSectionReader
   private backend: VerifierBackend | undefined
 
-  constructor(ctx: Context, config: Config, sectionReader: SettingsSectionReader = () => ({})) {
+  constructor(ctx: Context, config: Config) {
     super(ctx, 'verifierPro')
     this.config = config
-    this.sectionReader = sectionReader
   }
 
   private async backendFor(conversation?: GenerateOptions): Promise<VerifierBackend> {
     // Lazy per-call resolution: a missing key fails the CALL, not the mount.
-    return resolveBackend(this.ctx, this.config, conversation, this.sectionReader)
+    return resolveBackend(this.ctx, this.config, conversation)
   }
 
   /** Rank N candidates best-first with the PPT. */
@@ -499,13 +451,9 @@ function formatUsage(usage?: TokenUsageSnapshot): string {
 export function apply(ctx: Context, config: Config): void {
   const cfg: Config = { ...config }
 
-  // dsh 0.1.7 derives settings from this plugin's Config schema and stores them
-  // in the profile patch, so there is no separate settings section to overlay:
-  // every `sectionReader().X ?? cfg.X` chain below resolves to cfg.X.
-  const sectionReader: SettingsSectionReader = () => ({})
 
   // Service face.
-  const service = new VerifierService(ctx, cfg, sectionReader)
+  const service = new VerifierService(ctx, cfg)
   ctx.verifierPro = service
 
   const backendFor = async (): Promise<VerifierBackend> => {
@@ -768,7 +716,7 @@ export function apply(ctx: Context, config: Config): void {
     if (sessionId === undefined) return next()
     // Two-state gating (settings global → config default), fail-open.
     return (async function* boNTurn(): AsyncGenerator<StreamChunk> {
-      const decision = resolveBoNMode(cfg, sectionReader)
+      const decision = resolveBoNMode(cfg)
       if (!decision.enabled) {
         yield* next()
         return
@@ -776,7 +724,7 @@ export function apply(ctx: Context, config: Config): void {
       console.error(`[bo-n] mode: ${decision.source} (n=${String(decision.nCandidates)})`)
       let backend: VerifierBackend
       try {
-        backend = await resolveBackend(ctx, cfg, options, sectionReader)
+        backend = await resolveBackend(ctx, cfg, options)
       } catch (error) {
         console.error(`[bo-n] verifier config unavailable, degrading to normal answer: ${error instanceof Error ? error.message : String(error)}`)
         yield* next()
@@ -784,30 +732,24 @@ export function apply(ctx: Context, config: Config): void {
       }
       const boNConfig: BoNConfig = {
         nCandidates: decision.nCandidates,
-        samplingTemperature: sectionReader().samplingTemperature ?? cfg.samplingTemperature ?? 0.7,
-        // Web panel wins over plugin config for the mix (hot re-read per turn).
-        // `undefined` = panel never set → fall back to plugin config; an
-        // explicit `[]` from the panel = "no mix" (follow the session model)
-        // and OVERRIDES the plugin config. Both layers are normalized:
-        // settings-document strings like `omni-chat/agnes/...` whose head is a
-        // real provider become explicit routes; anything else stays a full
-        // model id (conversation provider).
+        samplingTemperature: cfg.samplingTemperature ?? 0.7,
+        // An empty mix means "follow the session model". Normalized: strings like `omni-chat/agnes/...` whose head is a real
+        // provider become explicit routes; anything else stays a full model id
+        // (conversation provider).
         mixModels: (() => {
-          const sectionMix = sectionReader().boNModelMix
-          const raw = sectionMix !== undefined ? sectionMix : cfg.boNModelMix
+          const raw = cfg.boNModelMix
           const known = knownProvidersOf(ctx)
           return (raw ?? []).map((entry) => normalizeMixEntry(entry as ModelMixEntry, known)) as BoNConfig['mixModels']
         })(),
-        timeoutMs: sectionReader().timeoutMsBoN ?? cfg.timeoutMsBoN ?? 300_000,
-        verifyTimeoutMs: sectionReader().verifyTimeoutMsBoN ?? cfg.verifyTimeoutMsBoN ?? 300_000,
-        // Rollout schedule: panel wins over config, config over the default.
-        samplingMode: sectionReader().samplingMode === 'serial'
+        timeoutMs: cfg.timeoutMsBoN ?? 300_000,
+        verifyTimeoutMs: cfg.verifyTimeoutMsBoN ?? 300_000,
+        samplingMode: cfg.samplingMode === 'serial'
           ? 'serial'
           : (cfg.samplingMode === 'serial' ? 'serial' : 'parallel'),
-        showFooter: sectionReader().showFooter ?? cfg.showFooter ?? true,
-        criteria: sectionReader().criteria?.length ? sectionReader().criteria : cfg.criteria,
-        pivots: sectionReader().boNPivots ?? cfg.boNPivots ?? 2,
-        seed: sectionReader().boNSeed ?? cfg.boNSeed ?? 0,
+        showFooter: cfg.showFooter ?? true,
+        criteria: cfg.criteria,
+        pivots: cfg.boNPivots ?? 2,
+        seed: cfg.boNSeed ?? 0,
       }
       yield* orchestrate(
         {

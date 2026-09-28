@@ -4,8 +4,7 @@
  * Merges the engineering of dsh-llm-as-a-verifier (TaurenMountain, MIT) —
  * fine-grained logprob scoring, Probabilistic Pivot Tournament, vLLM/SGLang
  * prefill, concurrency + timeout + token accounting — with the Best-of-N
- * conversation mode and Web settings panel of @aispin/plugin-verifier
- * (Aispin, MIT). Method by the LLM-as-a-Verifier paper (arXiv:2607.05391).
+ * conversation mode of @aispin/plugin-verifier (Aispin, MIT). Method by the LLM-as-a-Verifier paper (arXiv:2607.05391).
  *
  * Three faces:
  *  1. Tools — `verify_compare` / `verify_select` / `verify_track` (agent calls
@@ -13,12 +12,11 @@
  *  2. Service — `ctx.verifierPro.verify/compare/select/track` for code consumers.
  *  3. Mode — Best-of-N conversation mode: every assistant turn of a Bo-N
  *     session is sampled N ways and only the winning response replayed.
- *     Three-state gating: settings global (Web UI switch) → session preset →
- *     config default → off.
+ *     Gating: `config.boN` → off.
  *
  * Verifier credentials resolve zero-config from the dsh provider state:
- * plugin config (baseUrl/apiKey/model) → the `verifier` settings namespace →
- * the credentials seam (`credential:<name>` or the ambient key env) →
+ * plugin config (baseUrl/apiKey/model) → the provider route's own Loader entry
+ * config (read through `configEditor`) → the credentials seam (`credential:<name>` or the ambient key env) →
  * OPENAI_BASE_URL/OPENAI_API_KEY/DEEPSEEK_API_KEY.
  *
  * @module dsh-llm-verifier-pro
@@ -45,11 +43,11 @@ export declare const name = "llm-verifier-pro";
 export declare const inject: readonly ["tools", "systemPrompt", "llm"];
 /** Plugin configuration (dsh config cascade). */
 export interface Config {
-    /** OpenAI-compatible base URL. Empty (default) resolves: settings section → OPENAI_BASE_URL → DEEPSEEK_API_KEY implies api.deepseek.com. */
+    /** OpenAI-compatible base URL. Empty (default) resolves: session provider route → OPENAI_BASE_URL → DEEPSEEK_API_KEY implies api.deepseek.com. */
     baseUrl?: string;
-    /** API key. Supports `credential:<name>` (dsh credentials seam), `env:VAR`, or a plain value. Empty → settings section → seam/ambient env. */
+    /** API key. Supports `credential:<name>` (dsh credentials seam), `env:VAR`, or a plain value. Empty → seam/ambient env. */
     apiKey?: string;
-    /** Verifier model. Empty → settings section → the conversation's model (DeepSeek routes only) → deepseek-v4-flash, or /models on non-DeepSeek endpoints. */
+    /** Verifier model. Empty → the conversation's model (DeepSeek routes only) → deepseek-v4-flash, or /models on non-DeepSeek endpoints. */
     model?: string;
     /**
      * Verifier as a `provider/model` ROUTE (preferred): endpoint and API key are
@@ -114,8 +112,6 @@ export interface Config {
      *   - `{ provider, model }` — sampled with an EXPLICIT provider route
      *     (e.g. `{ provider: 'omni-message', model: 'opencode-go/minimax-m3' }`),
      *     overriding the conversation's provider for that candidate only.
-     *
-     * Configurable in the Web settings panel (verifier-pro section) too.
      */
     boNModelMix?: Array<ModelMixEntry>;
 }
@@ -128,38 +124,9 @@ export type ModelMixEntry = string | {
     model: string;
 };
 export declare const Config: z<Config>;
-/** The settings section shape this plugin reads (and the Web UI panel writes). */
-export interface VerifierSettingsSection {
-    baseUrl?: string;
-    apiKey?: string;
-    model?: string;
-    /** Verifier as a `provider/model` route; empty = follow the session model. */
-    verifier?: string;
-    /** Per-request verifier timeout in ms (mirrors Config.timeoutMs). */
-    timeoutMs?: number;
-    /** Strict-mode switch: false = raise on endpoints without logprobs. */
-    autoDegrade?: boolean;
-    boN?: boolean;
-    boNCandidates?: number;
-    samplingTemperature?: number;
-    samplingMode?: string;
-    timeoutMsBoN?: number;
-    verifyTimeoutMsBoN?: number;
-    showFooter?: boolean;
-    criteria?: string[];
-    boNPivots?: number;
-    boNSeed?: number;
-    boNModelMix?: Array<ModelMixEntry>;
-}
-/** A hot reader of the resolved settings section (re-read per call/turn). */
-export type SettingsSectionReader = () => VerifierSettingsSection;
 /**
  * Normalize one model-mix value to the runtime entry shape (`string` or
- * `{ provider, model }`). Values may arrive from three places with three
- * dialects:
- *   - plugin config (object or string; exact),
- *   - the settings document (object, string, or legacy `provider/model` text),
- *   - the Web panel (parsed already).
+ * `{ provider, model }`). A plugin-config value may be an object or a string.
  * A legacy `omni-chat/agnes/agnes-2.5-flash` string whose head is a REAL
  * provider name is split into `{ provider, model }`; anything else stays a
  * full model id (inherits the conversation provider).
@@ -181,47 +148,42 @@ export declare function sessionProviderEndpoint(ctx: Context, provider: string):
 };
 /**
  * Resolve the verifier backend connection from dsh's configured provider
- * state. Default (no explicit config, no panel Verifier route and no
+ * state. Default (no explicit config, no `verifier` route and no
  * three-part endpoint): the verifier FOLLOWS THE SESSION — same provider
  * route, endpoint and model as the conversation, so a user who only turns on
  * Best-of-N gets the zero-config self-verification experience (generate N
  * variants and grade them all with the conversation's own model).
  *
  * Resolution order:
- *  1. `verifier` route (config.verifier / section.verifier) — a
- *     `provider/model` string like the Model mix entries: endpoint + key env
- *     are read from dsh's provider config; a bare model id rides the session
- *     provider.
- *  2. three-part endpoint: config.baseUrl/apiKey/model → section.baseUrl/
- *     apiKey/model → session provider endpoint → env chain.
+ *  1. `config.verifier` route — a `provider/model` string like the Model mix
+ *     entries: endpoint + key env are read from that provider's Loader entry
+ *     config; a bare model id rides the session provider.
+ *  2. three-part endpoint: config.baseUrl/apiKey/model → session provider
+ *     endpoint → env chain.
  *  3. model falls back to the conversation's own model (any provider route).
  */
-export declare function resolveBackend(ctx: Context, config: Config, conversation?: GenerateOptions, sectionReader?: SettingsSectionReader): Promise<VerifierBackend>;
+export declare function resolveBackend(ctx: Context, config: Config, conversation?: GenerateOptions): Promise<VerifierBackend>;
 /** The Bo-N mode decision for one conversation request. */
 export interface BoNModeDecision {
     readonly enabled: boolean;
     readonly nCandidates: number;
-    readonly source: 'settings-global' | 'config-default' | 'off';
+    readonly source: 'config-default' | 'off';
 }
 /**
- * The Bo-N mode decision, evaluated per turn (hot): settings global →
- * config default → off.
+ * The Bo-N mode decision, evaluated per turn (hot).
  *
- * The panel's explicit switch is the whole story: `boN: true` turns the mode
- * on for EVERY conversation at the section's candidate count, and an explicit
- * `boN: false` is the master kill-switch that also overrides the config
- * default. Only an unset section falls through to the deployment default
- * (`config.boN`).
+ * Since dsh 0.1.7 the plugin Config is the only settings layer, so this is one
+ * switch: `config.boN: true` turns the mode on for EVERY conversation at
+ * `config.boNCandidates`, anything else is off.
  */
-export declare function resolveBoNMode(config: Config, sectionReader?: SettingsSectionReader): BoNModeDecision;
+export declare function resolveBoNMode(config: Config): BoNModeDecision;
 /** The `ctx.verifierPro` service (service face). Unique name: the original
  * `verifier` service is already registered by @aispin/plugin-verifier — both
  * plugins coexist in one profile. */
 export declare class VerifierService extends Service {
     private readonly config;
-    private readonly sectionReader;
     private backend;
-    constructor(ctx: Context, config: Config, sectionReader?: SettingsSectionReader);
+    constructor(ctx: Context, config: Config);
     private backendFor;
     /** Rank N candidates best-first with the PPT. */
     verify(options: {

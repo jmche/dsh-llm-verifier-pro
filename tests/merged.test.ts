@@ -28,6 +28,22 @@ function harness() {
   return { ctx, registered }
 }
 
+/**
+ * Since dsh 0.1.7 a provider route lives in its adapter's Loader entry config,
+ * read through the `configEditor` service (SettingsForms has no `get`). This is
+ * the shape sessionProviderEndpoint walks.
+ */
+function providerCtx(routes: Record<string, { baseURL: string; apiKeyEnv?: string }>, key = 'seam-key', extra: Record<string, unknown> = {}) {
+  return {
+    ...extra,
+    get: vi.fn((name: string) => {
+      if (name === 'configEditor') return { entries: () => [{ options: { id: 'llm-pi-ai', config: { providers: routes } } }] }
+      if (name === 'credentials') return { resolve: async () => ({ value: key }) }
+      return undefined
+    }),
+  } as never
+}
+
 async function execute(def: ToolDefinition, args: Record<string, unknown>) {
   const controller = new AbortController()
   return def.execute(args, { signal: controller.signal } as never)
@@ -71,32 +87,16 @@ describe('plugin shape (merged)', () => {
   })
 })
 
-describe('resolveBoNMode (settings global → config default → off)', () => {
+describe('resolveBoNMode (config default → off)', () => {
   it('is off by default', () => {
-    expect(resolveBoNMode({}, () => ({}))).toEqual({ enabled: false, nCandidates: 0, source: 'off' })
-  })
-
-  it('the settings switch wins over the config default', () => {
-    const decision = resolveBoNMode({ boN: true, boNCandidates: 5 }, () => ({ boN: true, boNCandidates: 3 }))
-    expect(decision).toEqual({ enabled: true, nCandidates: 3, source: 'settings-global' })
-  })
-
-  it('an explicit settings Off is the master kill-switch', () => {
-    const decision = resolveBoNMode({ boN: true }, () => ({ boN: false }))
-    expect(decision.source).toBe('off')
-    expect(decision.enabled).toBe(false)
+    expect(resolveBoNMode({})).toEqual({ enabled: false, nCandidates: 0, source: 'off' })
   })
 
   it('the config default applies when the switch is unset', () => {
-    const decision = resolveBoNMode({ boN: true, boNCandidates: 5 }, () => ({}))
+    const decision = resolveBoNMode({ boN: true, boNCandidates: 5 })
     expect(decision.source).toBe('config-default')
     expect(decision.enabled).toBe(true)
     expect(decision.nCandidates).toBe(5)
-  })
-
-  it('an unset switch falls back to the section candidate count over the config', () => {
-    const decision = resolveBoNMode({ boNCandidates: 5 }, () => ({ boN: true, boNCandidates: 4 }))
-    expect(decision).toEqual({ enabled: true, nCandidates: 4, source: 'settings-global' })
   })
 })
 
@@ -181,35 +181,21 @@ describe('resolveBackend (zero-config inheritance)', () => {
     expect(backend.config.deepseek).toBe(true)
   })
 
-  it('accepts the credential: reference form and falls back to the settings section', async () => {
+  it('accepts the credential: reference form from the plugin config', async () => {
     const ctx = {
       get: vi.fn(() => ({
         resolve: async () => ({ value: 'seam-key' }),
       })),
     } as never
-    const backend = await resolveBackend(ctx, {}, undefined, () => ({ baseUrl: 'https://omni.example/v1', apiKey: 'credential:OMNI_CHAT_API_KEY' }))
+    const backend = await resolveBackend(ctx, { baseUrl: 'https://omni.example/v1', apiKey: 'credential:OMNI_CHAT_API_KEY' })
     expect(backend.config.baseUrl).toBe('https://omni.example/v1')
     expect(backend.config.apiKey).toBe('seam-key')
   })
 
   it('zero-config: follows the session provider + model (any route)', async () => {
-    const ctx = {
-      get: vi.fn((key: string) => {
-        if (key === 'settings') {
-          return {
-            get: () => ({
-              providers: {
-                'omni-chat': { baseURL: 'https://session-gw.example/v1', apiKeyEnv: 'OMNI_CHAT_API_KEY' },
-              },
-            }),
-          }
-        }
-        if (key === 'credentials') return { resolve: async () => ({ value: 'session-key' }) }
-        return undefined
-      }),
-    } as never
+    const ctx = providerCtx({ 'omni-chat': { baseURL: 'https://session-gw.example/v1', apiKeyEnv: 'OMNI_CHAT_API_KEY' } }, 'session-key')
     const conversation = { provider: 'omni-chat', model: 'opencode-go/deepseek-v4-flash' } as never
-    const backend = await resolveBackend(ctx, {}, conversation, () => ({}))
+    const backend = await resolveBackend(ctx, {}, conversation)
     expect(backend.config.baseUrl).toBe('https://session-gw.example/v1')
     expect(backend.config.model).toBe('opencode-go/deepseek-v4-flash')
     expect(backend.config.apiKey).toBe('session-key')
@@ -217,57 +203,21 @@ describe('resolveBackend (zero-config inheritance)', () => {
   })
 
   it('verifier route: provider/model resolves endpoint from the provider config', async () => {
-    const ctx = {
-      llm: { listProviders: () => [{ id: 'omni-chat', name: '' }] },
-      get: vi.fn((key: string) => {
-        if (key === 'settings') {
-          return { get: () => ({ providers: { 'omni-chat': { baseURL: 'https://gw.example/v1', apiKeyEnv: 'OMNI_CHAT_API_KEY' } } }) }
-        }
-        if (key === 'credentials') return { resolve: async () => ({ value: 'gw-key' }) }
-        return undefined
-      }),
-    } as never
-    const backend = await resolveBackend(ctx, {}, undefined, () => ({ verifier: 'omni-chat/ollama-local/qwen3.8:27b' }))
+    const ctx = providerCtx({ 'omni-chat': { baseURL: 'https://gw.example/v1', apiKeyEnv: 'OMNI_CHAT_API_KEY' } }, 'gw-key', { llm: { listProviders: () => [{ id: 'omni-chat', name: '' }] } })
+    const backend = await resolveBackend(ctx, { verifier: 'omni-chat/ollama-local/qwen3.8:27b' })
     expect(backend.config.baseUrl).toBe('https://gw.example/v1')
     expect(backend.config.model).toBe('ollama-local/qwen3.8:27b')
     expect(backend.config.apiKey).toBe('gw-key')
   })
 
   it('verifier bare model id rides the session provider', async () => {
-    const ctx = {
-      get: vi.fn((key: string) => {
-        if (key === 'settings') {
-          return { get: () => ({ providers: { 'omni-chat': { baseURL: 'https://gw.example/v1', apiKeyEnv: 'OMNI_CHAT_API_KEY' } } }) }
-        }
-        if (key === 'credentials') return { resolve: async () => ({ value: 'gw-key-2' }) }
-        return undefined
-      }),
-    } as never
+    const ctx = providerCtx({ 'omni-chat': { baseURL: 'https://gw.example/v1', apiKeyEnv: 'OMNI_CHAT_API_KEY' } }, 'gw-key-2')
     const conversation = { provider: 'omni-chat', model: 'x' } as never
-    const backend = await resolveBackend(ctx, {}, conversation, () => ({ verifier: 'deepseek-chat' }))
+    const backend = await resolveBackend(ctx, { verifier: 'deepseek-chat' }, conversation)
     expect(backend.config.baseUrl).toBe('https://gw.example/v1')
     expect(backend.config.model).toBe('deepseek-chat')
   })
 
-  it('panel verifier wins over the plugin-config verifier (panel overrides profile patch)', async () => {
-    const ctx = {
-      llm: { listProviders: () => [{ id: 'omni-chat', name: '' }] },
-      get: vi.fn((key: string) => {
-        if (key === 'settings') {
-          return { get: () => ({ providers: { 'omni-chat': { baseURL: 'https://gw.example/v1', apiKeyEnv: 'OMNI_CHAT_API_KEY' } } }) }
-        }
-        if (key === 'credentials') return { resolve: async () => ({ value: 'gw-key' }) }
-        return undefined
-      }),
-    } as never
-    const backend = await resolveBackend(
-      ctx,
-      { verifier: 'omni-chat/config-model' },       // plugin-config (profile patch)
-      { provider: 'omni-chat', model: 'x' } as never,
-      () => ({ verifier: 'omni-chat/panel-model' }), // panel setting
-    )
-    expect(backend.config.model).toBe('panel-model') // panel overrides config
-  })
 })
 describe('prefill gating (main response usable -> skip)', () => {
   it('skips prefill when the main response already carries a scoreable tag + logprobs', async () => {

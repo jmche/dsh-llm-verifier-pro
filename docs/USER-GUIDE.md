@@ -30,8 +30,8 @@ Override the bundle defaults in the profile's `cordis.patch.yml`:
     # Secret: credential:<name> (dsh credentials seam) | env:VAR | plain text
     apiKey: credential:YOUR_API_KEY_ENV
     # Scoring model; when empty, the resolution chain is: explicit config →
-    # settings section → conversation model (DeepSeek route) →
-    # deepseek-v4-flash, or /models on non-DeepSeek endpoints
+    # conversation model (DeepSeek route) → deepseek-v4-flash, or /models on
+    # non-DeepSeek endpoints
     model: opencode-go/deepseek-v4-flash
     timeoutMs: 60000        # Per-call verifier request timeout
     maxConcurrency: 8       # Concurrent verifier calls (tools + Bo-N shared)
@@ -42,7 +42,7 @@ Override the bundle defaults in the profile's `cordis.patch.yml`:
     select: true
     track: true
     # ── Best-of-N conversation mode ──
-    boN: false              # master switch — the Web panel or this line turns it on; an explicit Off wins over everything
+    boN: false              # master switch — this line is the only place it lives
     boNCandidates: 5        # Candidates sampled per assistant turn
     samplingTemperature: 0.7
     samplingMode: parallel  # 'parallel' (default) fires N rollouts at once; 'serial' waits one-at-a-time (safer for slow local models)
@@ -82,10 +82,9 @@ only, and sampling a working turn would waste tokens on unusable candidates.
 The decision is re-evaluated per turn and is **all-or-nothing — it covers
 every conversation; there is no per-session tier**:
 
-| Layer | Switch |
-|---|---|
-| Settings (Web UI panel) | `verifier-pro.boN: true` — an explicit `false` is the master kill-switch and overrides the config default |
-| Config default | `config.boN: true` (only when the section is unset) |
+It is one switch: `config.boN: true` turns the mode on for every conversation
+at `config.boNCandidates`; anything else is off. Since dsh 0.1.7 the plugin
+config is the only layer — there is no settings document above it.
 
 Every failure path fails **open**: a sampling overrun degrades Bo-N → Bo-K →
 a normal answer, with an explanatory footer under the answer. Never a dead
@@ -94,35 +93,18 @@ turn.
 ## Endpoint resolution order (zero-config inheritance)
 
 ```
-explicit config (config) → settings section (verifier-pro) → credentials seam
-(credential:<name> / provider key env) → OPENAI_BASE_URL / OPENAI_API_KEY →
-DEEPSEEK_API_KEY (implies api.deepseek.com)
+explicit config (config) → the session provider route's own Loader entry config
+(read through the configEditor service) → credentials seam (credential:<name> /
+provider key env) → OPENAI_BASE_URL / OPENAI_API_KEY → DEEPSEEK_API_KEY
+(implies api.deepseek.com)
 ```
-
-## Web settings panel
-
-The plugin ships a browser-side settings panel (`src/client.js`) registered as
-the `verifier-pro` settings section (slot id `verifier-pro`, title
-"Best-of-N"). It can control:
-- a live **Current effect** banner stating what the settings do right now
-  (`Best-of-N is ON for every conversation · 5-way` / `... is OFF`)
-- the master switch plus candidate count: Off (master kill-switch),
-  3-way, 5-way, Custom (2–8)
-- the verify-phase timeout
-- the rollout schedule: Parallel (default, all candidates at once) or Serial
-  (one at a time — safer when several candidates share one slow local model)
-- the candidate model mix (`provider/model` lines; the first `/` splits the
-  provider from the model id — a model id containing `/` must include its real
-  provider, only a `/`-free id can ride the conversation's provider)
-- `autoDegrade`: fall back to sampling scoring when the endpoint lacks
-  logprobs (ON) or fail loudly in strict mode (OFF)
 
 ## Development
 
 ```bash
 npm install
 npm run check      # typecheck + full test suite
-npm run build      # tsc + copy client.js into lib/
+npm run build      # tsc
 ```
 
 ## License

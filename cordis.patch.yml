@@ -5,7 +5,7 @@
 #
 #   - verify_compare / verify_select / verify_track tools (agent-facing)
 #   - Best-of-N conversation mode (backend Best-of-N sampling + fine-grained
-#     selection on every assistant turn) plus Web settings panel
+#     selection on every assistant turn)
 #   - service face ctx.verifier (compare/select/track) for code consumers
 #
 # Verifier endpoint configuration lives in the profile's cordis.patch.yml:
@@ -15,7 +15,7 @@
 #       model: opencode-go/deepseek-v4-flash
 #       baseUrl: https://omni-pool.jmche.workers.dev/v1
 #       apiKey: credential:OMNI_CHAT_API_KEY
-#       boN: false            # optional: default Best-of-N off (Web panel / preset enable it)
+#       boN: false            # master switch; this config is the only place it lives
 #       boNCandidates: 5
 #
 # Credentials resolve: plugin config → OPENAI_BASE_URL/OPENAI_API_KEY →
