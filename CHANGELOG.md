@@ -17,10 +17,15 @@ pages a plugin registers. Both halves are now in place:
   entry. It injects only services dsh 0.1.7 ships (`slots`, `locale`,
   `configForms`) — the earlier panel hung `pending` on the removed
   `settingsScope`.
-- `boNModelMix` and `criteria` are edited as `;`-separated text; a mix entry
-  stored as `{ provider, model }` is shown, and saved back, as `provider/model`,
-  which the plugin resolves to the same route while that provider is one
-  `llm.listProviders()` reports.
+- `boNModelMix` and `criteria` are edited one entry per line. A line that
+  still reads as a stored entry saves that entry unchanged, so an untouched
+  `{ provider, model }` mix entry keeps its explicit route.
+- Numeric fields carry ranges (timeouts ≥ 1, `boNCandidates` an integer ≥ 2,
+  counts integers ≥ 1, temperature 0–2), so the Host refuses a nonsensical
+  save — a 0 ms timeout would otherwise abort every verifier call.
+- `apply()` and `VerifierService` take the Loader's live config type
+  (`LiveConfig`), so reading a volatile field without `currentConfig()` where
+  a plain value is expected fails to compile.
 
 ### Breaking — adapted to dsh 0.1.7, which redesigned settings twice over
 dsh 0.1.7 replaced `SettingsProvider` with `SettingsForms`: `register`, `get`

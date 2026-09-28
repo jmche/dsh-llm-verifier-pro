@@ -130,6 +130,9 @@ export type ModelMixEntry = string | {
  * read per call through {@link currentConfig}. `apiKey` (a secret), the
  * `deepseek`/`prefill` call-path overrides and the tool registration flags
  * stay ordinary: editing them in the profile patch remounts the plugin.
+ *
+ * The ranges make the Host refuse a nonsensical save (a 0 ms timeout would
+ * abort every verifier call) instead of storing it.
  */
 export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     baseUrl: z<string, string, "volatile">;
@@ -197,7 +200,14 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
  * fields as `{ get() }` references; a config built by hand (tests, embedders)
  * holds plain values. Both read the same.
  */
-export declare function currentConfig(config: Config): Config;
+/**
+ * The config as the Loader hands it to `apply`: every volatile field is a
+ * `{ get() }` reference. Typed apart from {@link Config} so that using a
+ * volatile field without {@link currentConfig} fails to compile wherever a
+ * plain value is expected.
+ */
+export type LiveConfig = ReturnType<typeof Config>;
+export declare function currentConfig(config: LiveConfig | Config): Config;
 /**
  * Normalize one model-mix value to the runtime entry shape (`string` or
  * `{ provider, model }`). A plugin-config value may be an object or a string.
@@ -266,7 +276,7 @@ export declare function resolveBoNMode(config: Config): BoNModeDecision;
 export declare class VerifierService extends Service {
     private readonly config;
     private backend;
-    constructor(ctx: Context, config: Config);
+    constructor(ctx: Context, config: LiveConfig | Config);
     private backendFor;
     /** Rank N candidates best-first with the PPT. */
     verify(options: {
@@ -311,7 +321,7 @@ export declare class VerifierService extends Service {
         usage: TokenUsageSnapshot;
     }>;
 }
-export declare function apply(ctx: Context, config: Config): void;
+export declare function apply(ctx: Context, config: LiveConfig | Config): void;
 declare module '@deepseek-ai/cordis' {
     interface Context {
         verifierPro: VerifierService;

@@ -155,14 +155,17 @@ export type ModelMixEntry = string | { provider?: string; model: string }
  * read per call through {@link currentConfig}. `apiKey` (a secret), the
  * `deepseek`/`prefill` call-path overrides and the tool registration flags
  * stay ordinary: editing them in the profile patch remounts the plugin.
+ *
+ * The ranges make the Host refuse a nonsensical save (a 0 ms timeout would
+ * abort every verifier call) instead of storing it.
  */
 export const Config = z.object({
   baseUrl: z.string().volatile(),
   apiKey: z.string(),
   model: z.string().volatile(),
   verifier: z.string().volatile(),
-  timeoutMs: z.number().volatile(),
-  maxConcurrency: z.number().volatile(),
+  timeoutMs: z.number().min(1).volatile(),
+  maxConcurrency: z.number().min(1).step(1).volatile(),
   deepseek: z.boolean(),
   prefill: z.boolean(),
   autoDegrade: z.boolean().default(true).volatile(),
@@ -170,15 +173,15 @@ export const Config = z.object({
   select: z.boolean().default(true),
   track: z.boolean().default(true),
   boN: z.boolean().default(false).volatile(),
-  boNCandidates: z.number().default(5).volatile(),
-  samplingTemperature: z.number().default(0.7).volatile(),
+  boNCandidates: z.number().min(2).step(1).default(5).volatile(),
+  samplingTemperature: z.number().min(0).max(2).default(0.7).volatile(),
   samplingMode: z.string().default('parallel').volatile(),
-  timeoutMsBoN: z.number().default(300_000).volatile(),
-  verifyTimeoutMsBoN: z.number().default(300_000).volatile(),
+  timeoutMsBoN: z.number().min(1).default(300_000).volatile(),
+  verifyTimeoutMsBoN: z.number().min(1).default(300_000).volatile(),
   showFooter: z.boolean().default(true).volatile(),
   criteria: z.array(z.string()).default([]).volatile(),
-  boNPivots: z.number().default(2).volatile(),
-  boNSeed: z.number().default(0).volatile(),
+  boNPivots: z.number().min(1).step(1).default(2).volatile(),
+  boNSeed: z.number().step(1).default(0).volatile(),
   boNModelMix: z.array(z.union([z.string(), z.object({ provider: z.string(), model: z.string() })])).default([]).volatile(),
 })
 
@@ -187,7 +190,15 @@ export const Config = z.object({
  * fields as `{ get() }` references; a config built by hand (tests, embedders)
  * holds plain values. Both read the same.
  */
-export function currentConfig(config: Config): Config {
+/**
+ * The config as the Loader hands it to `apply`: every volatile field is a
+ * `{ get() }` reference. Typed apart from {@link Config} so that using a
+ * volatile field without {@link currentConfig} fails to compile wherever a
+ * plain value is expected.
+ */
+export type LiveConfig = ReturnType<typeof Config>
+
+export function currentConfig(config: LiveConfig | Config): Config {
   const plain: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(config)) {
     plain[key] = typeof value === 'object' && value !== null && !Array.isArray(value) && typeof (value as { get?: unknown }).get === 'function'
@@ -414,10 +425,10 @@ export function resolveBoNMode(config: Config): BoNModeDecision {
  * `verifier` service is already registered by @aispin/plugin-verifier — both
  * plugins coexist in one profile. */
 export class VerifierService extends Service {
-  private readonly config: Config
+  private readonly config: LiveConfig | Config
   private backend: VerifierBackend | undefined
 
-  constructor(ctx: Context, config: Config) {
+  constructor(ctx: Context, config: LiveConfig | Config) {
     super(ctx, 'verifierPro')
     this.config = config
   }
@@ -470,8 +481,10 @@ function formatUsage(usage?: TokenUsageSnapshot): string {
   return `${u.calls} verifier call(s), input ${u.inputTokens} tokens (cached ${u.cachedInputTokens}, ${rate.toFixed(1)}% hit), output ${u.outputTokens} tokens (reasoning ${u.reasoningTokens})`
 }
 
-export function apply(ctx: Context, config: Config): void {
-  const cfg: Config = { ...config }
+export function apply(ctx: Context, config: LiveConfig | Config): void {
+  // `compare`/`select`/`track` are ordinary fields read once here; every
+  // volatile field is read per call/turn through currentConfig(config).
+  const cfg = config
 
 
   // Service face.

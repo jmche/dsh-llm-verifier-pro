@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { Context } from '@deepseek-ai/cordis'
 import { createVolatile, isVolatile, updateVolatile } from '@deepseek-ai/cosmokit'
+import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { apply, Config } from '../src/index'
+import { createMockOpenAI, pairwiseCompletion } from './helpers/mock-openai'
 
 /**
  * dsh 0.1.7 builds a plugin's settings form only from `.volatile()` Config
@@ -82,5 +84,47 @@ describe('volatile Config (Plugins-page form)', () => {
     updateVolatile(config.boN as never, createVolatile(true) as never)
     await turn()
     expect(sampled).toHaveLength(2) // Bo-N now on at boNCandidates=3 → N-1 candidates
+  })
+
+  it('the verify_* tools read a Loader volatile commit on their next call', async () => {
+    const mock = await createMockOpenAI()
+    mock.setScript(() => pairwiseCompletion(' A ', ' G '))
+    try {
+      const ctx = new Context()
+      const registered: ToolDefinition[] = []
+      ;(ctx as unknown as { tools: unknown }).tools = { register: (def: ToolDefinition) => registered.push(def) }
+      ;(ctx as unknown as { systemPrompt: unknown }).systemPrompt = { section: () => {} }
+      ;(ctx as unknown as { llm: unknown }).llm = { stream: () => [][Symbol.asyncIterator]() }
+      const config = (Config as unknown as (value: unknown) => Record<string, unknown>)({
+        baseUrl: mock.baseUrl,
+        apiKey: 'test-key',
+        model: 'first-model',
+        prefill: false,
+      })
+      apply(ctx, config as never)
+      const compare = registered.find((tool) => tool.name === 'verify_compare')!
+      const call = () => compare.execute(
+        { problem: 'Task', candidateA: 'a', candidateB: 'b', criteria: { Correctness: 'Does it work?' } },
+        { signal: new AbortController().signal } as never,
+      )
+
+      await call()
+      expect(mock.requests.at(-1)?.body.model).toBe('first-model')
+      updateVolatile(config.model as never, createVolatile('edited-model') as never)
+      await call()
+      expect(mock.requests.at(-1)?.body.model).toBe('edited-model')
+    } finally {
+      await mock.close()
+    }
+  })
+
+  it('refuses out-of-range values, so the Host rejects a bad save', () => {
+    const parse = Config as unknown as (value: unknown) => unknown
+    expect(() => parse({ timeoutMs: 0 })).toThrow()
+    expect(() => parse({ boNCandidates: 1 })).toThrow()
+    expect(() => parse({ boNCandidates: 2.5 })).toThrow()
+    expect(() => parse({ samplingTemperature: -0.1 })).toThrow()
+    expect(() => parse({ maxConcurrency: 0 })).toThrow()
+    expect(() => parse({ timeoutMs: 600000, boNCandidates: 3, samplingTemperature: 0.7, boNPivots: 2 })).not.toThrow()
   })
 })

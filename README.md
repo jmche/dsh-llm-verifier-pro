@@ -190,6 +190,12 @@ form's fields are `.volatile()` Config fields, which the Loader commits into
 the running plugin). The excluded fields are edited in the patch; changing one
 there remounts the plugin.
 
+Out-of-range values (a timeout below 1 ms, fewer than 2 candidates, a
+temperature outside 0–2, a fractional count) are refused on save. The form is
+bound to the entry id `llm-verifier-pro`; a row renamed in the patch, or a
+second instance under another id, is configured in the patch only. Model mix
+and criteria take one entry per line.
+
 ### Parameters
 
 Every parameter lives in the plugin config (the profile's `cordis.patch.yml`)
