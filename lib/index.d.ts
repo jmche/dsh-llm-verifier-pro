@@ -136,11 +136,20 @@ export declare function normalizeMixEntry(entry: ModelMixEntry | string, knownPr
     model: string;
 };
 /**
- * Resolve a session provider's endpoint configuration from dsh's settings
- * namespaces. Container-style namespaces hold per-provider entries
- * (`llm-pi-ai.providers.<name>.{baseURL, apiKeyEnv}`); a dedicated namespace
- * (`llm-<provider>`) may itself carry the endpoint (`llm-deepseek`). Returns
- * `{}` when the provider is unknown — the caller falls back to its env chain.
+ * Resolve a session provider's endpoint configuration from the adapter that
+ * owns that route.
+ *
+ * The adapter publishes the mapping itself: `listConfigurableProviders()` gives
+ * each route a `settingsNs` (the owning Loader entry's id) and a `settingsPath`
+ * into that entry's config -- `["providers", "<route>"]` for a multi-route
+ * adapter, `[]` when the whole config is one route's profile. Following it means
+ * this never guesses a key or an id, which is what the two previous versions
+ * both got wrong: a route named `omni-chat` was never in a namespace called
+ * `llm-omni-chat`, and `deepseek-official` lives in an entry called
+ * `llm-deepseek`.
+ *
+ * Returns `{}` when the route is unknown or unconfigured -- the caller falls
+ * back to its env chain.
  */
 export declare function sessionProviderEndpoint(ctx: Context, provider: string): {
     baseUrl?: string;

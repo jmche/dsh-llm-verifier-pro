@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { Context } from '@deepseek-ai/cordis'
-import { apply, name, inject, resolveBoNMode, resolveBackend } from '../src/index'
+import { apply, name, inject, resolveBoNMode, resolveBackend, sessionProviderEndpoint } from '../src/index'
 import { completion, createMockOpenAI, pairwiseCompletion, type MockOpenAIServer } from './helpers/mock-openai'
 import { verifyBest } from '../src/bon'
 import { VerifierBackend } from '../src/backend'
@@ -33,15 +33,27 @@ function harness() {
  * read through the `configEditor` service (SettingsForms has no `get`). This is
  * the shape sessionProviderEndpoint walks.
  */
-function providerCtx(routes: Record<string, { baseURL: string; apiKeyEnv?: string }>, key = 'seam-key', extra: Record<string, unknown> = {}) {
+function adapterCtx(entries: Array<{ id: string; config: unknown }>, routes: Array<{ provider: string; settingsNs: string; settingsPath: readonly string[] }>, key = 'seam-key') {
   return {
-    ...extra,
+    llm: {
+      listProviders: () => routes.map((r) => ({ id: r.provider, name: '' })),
+      listConfigurableProviders: () => routes,
+    },
     get: vi.fn((name: string) => {
-      if (name === 'configEditor') return { entries: () => [{ options: { id: 'llm-pi-ai', config: { providers: routes } } }] }
+      if (name === 'configEditor') return { entries: () => entries.map((e) => ({ options: { id: e.id, config: e.config } })) }
       if (name === 'credentials') return { resolve: async () => ({ value: key }) }
       return undefined
     }),
   } as never
+}
+
+/** A multi-route adapter (pi-ai shape): one entry, a `providers` table, settingsPath ["providers", route]. */
+function providerCtx(routes: Record<string, { baseURL: string; apiKeyEnv?: string }>, key = 'seam-key') {
+  return adapterCtx(
+    [{ id: 'llm-pi-ai', config: { providers: routes } }],
+    Object.keys(routes).map((provider) => ({ provider, settingsNs: 'llm-pi-ai', settingsPath: ['providers', provider] })),
+    key,
+  )
 }
 
 async function execute(def: ToolDefinition, args: Record<string, unknown>) {
@@ -203,11 +215,33 @@ describe('resolveBackend (zero-config inheritance)', () => {
   })
 
   it('verifier route: provider/model resolves endpoint from the provider config', async () => {
-    const ctx = providerCtx({ 'omni-chat': { baseURL: 'https://gw.example/v1', apiKeyEnv: 'OMNI_CHAT_API_KEY' } }, 'gw-key', { llm: { listProviders: () => [{ id: 'omni-chat', name: '' }] } })
+    const ctx = providerCtx({ 'omni-chat': { baseURL: 'https://gw.example/v1', apiKeyEnv: 'OMNI_CHAT_API_KEY' } }, 'gw-key')
     const backend = await resolveBackend(ctx, { verifier: 'omni-chat/ollama-local/qwen3.8:27b' })
     expect(backend.config.baseUrl).toBe('https://gw.example/v1')
     expect(backend.config.model).toBe('ollama-local/qwen3.8:27b')
     expect(backend.config.apiKey).toBe('gw-key')
+  })
+
+  it("a single-route adapter is found through its settingsNs, not an entry-id guess", async () => {
+    // deepseek-official's profile IS the whole entry config (settingsPath []), and
+    // that entry is called `llm-deepseek` -- so any `llm-${provider}` convention
+    // misses it. Only the adapter's own settingsNs finds it.
+    const ctx = adapterCtx(
+      [{ id: 'llm-deepseek', config: { baseURL: 'https://flat-gw.example/v1', apiKeyEnv: 'DS_KEY' } }],
+      [{ provider: 'deepseek-official', settingsNs: 'llm-deepseek', settingsPath: [] }],
+      'flat-key',
+    )
+    expect(sessionProviderEndpoint(ctx, 'deepseek-official')).toEqual({ baseUrl: 'https://flat-gw.example/v1', apiKeyEnv: 'DS_KEY' })
+    // an unconfigured route resolves to nothing rather than to someone else's endpoint
+    expect(sessionProviderEndpoint(ctx, 'omni-chat')).toEqual({})
+  })
+
+  it('resolves nothing when the configEditor service is absent', () => {
+    const ctx = {
+      llm: { listConfigurableProviders: () => [{ provider: 'omni-chat', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'omni-chat'] }] },
+      get: vi.fn(() => undefined),
+    } as never
+    expect(sessionProviderEndpoint(ctx, 'omni-chat')).toEqual({})
   })
 
   it('verifier bare model id rides the session provider', async () => {
