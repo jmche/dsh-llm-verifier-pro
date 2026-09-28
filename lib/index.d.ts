@@ -73,8 +73,6 @@ export interface Config {
      * `false` is strict mode and raises instead of silently downgrading.
      */
     autoDegrade?: boolean;
-    /** Settings namespace whose section supplies baseUrl/apiKey/model — and the Bo-N global switch. */
-    settingsNs?: string;
     /** Register `verify_compare`. Defaults to true. */
     compare?: boolean;
     /** Register `verify_select`. Defaults to true. */
@@ -170,12 +168,6 @@ export declare function normalizeMixEntry(entry: ModelMixEntry | string, knownPr
     provider?: string;
     model: string;
 };
-/**
- * Register the verifier settings namespace and return a hot reader.
- * The settings seam is optional (delegate-and-degrade): without it the reader
- * yields the empty section and explicit plugin config carries everything.
- */
-export declare function sectionReaderOf(ctx: Context, config: Config): SettingsSectionReader;
 /**
  * Resolve a session provider's endpoint configuration from dsh's settings
  * namespaces. Container-style namespaces hold per-provider entries

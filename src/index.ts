@@ -28,7 +28,6 @@ import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { JsonValue } from '@deepseek-ai/dsh-tools'
 import type { StreamChunk, GenerateOptions } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
@@ -37,6 +36,15 @@ import { Verifier, type CompareOptions, type SelectOptions, type TrackOptions } 
 import type { TokenUsageSnapshot } from './backend.js'
 import { orchestrate, isInternalRequest, markInternalRequest, verifyBest, taskOf } from './bon.js'
 import type { BoNConfig, BoNTurnSummary } from './bon.js'
+
+/**
+ * Arbitrary lossless JSON, used below only to type the `usage` payload a tool
+ * result carries. Declared here rather than imported: dsh-tools re-exported
+ * this in 0.1.1 and stopped in 0.1.7 (it now lives in @deepseek-ai/dsh-util-values),
+ * and since TypeScript is structural an identical local declaration is
+ * interchangeable with the core's — one fewer core import to track.
+ */
+type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 
 export {
   VerifierBackend,
@@ -90,8 +98,6 @@ export interface Config {
    * `false` is strict mode and raises instead of silently downgrading.
    */
   autoDegrade?: boolean
-  /** Settings namespace whose section supplies baseUrl/apiKey/model — and the Bo-N global switch. */
-  settingsNs?: string
   /** Register `verify_compare`. Defaults to true. */
   compare?: boolean
   /** Register `verify_select`. Defaults to true. */
@@ -156,7 +162,6 @@ export const Config: z<Config> = z.object({
   deepseek: z.boolean(),
   prefill: z.boolean(),
   autoDegrade: z.boolean().default(true),
-  settingsNs: z.string().default('verifier-pro'),
   compare: z.boolean().default(true),
   select: z.boolean().default(true),
   track: z.boolean().default(true),
@@ -199,33 +204,6 @@ export interface VerifierSettingsSection {
   boNModelMix?: Array<ModelMixEntry>
 }
 
-/** The settings section schema. Field NAMES mirror Config exactly, so the
- * settings document and the plugin-config patch share one vocabulary. Only
- * `verifier` and `boNModelMix` are optional (no default): `undefined` means
- * "panel never set" → runtime falls back to plugin config, while an explicit
- * value (including an explicit empty mix) overrides plugin config. */
-const SettingsSectionSchema = z.object({
-  baseUrl: z.string().default(''),
-  apiKey: z.string().default(''),
-  model: z.string().default(''),
-  verifier: z.string().default(''),
-  timeoutMs: z.number().required(false),
-  autoDegrade: z.boolean().required(false),
-  boN: z.boolean().required(false),
-  boNCandidates: z.number().required(false),
-  samplingTemperature: z.number().required(false),
-  samplingMode: z.string().required(false),
-  timeoutMsBoN: z.number().required(false),
-  verifyTimeoutMsBoN: z.number().required(false),
-  showFooter: z.boolean().required(false),
-  criteria: z.array(z.string()).required(false),
-  boNPivots: z.number().required(false),
-  boNSeed: z.number().required(false),
-  // No schema default: `undefined` = "panel never set" (runtime falls back to
-  // plugin config), while an explicit `[]` from the panel = "no model mix"
-  // (follow the session model) and overrides the plugin config.
-  boNModelMix: z.array(z.union([z.string(), z.object({ provider: z.string(), model: z.string() })])).required(false),
-})
 
 /** A hot reader of the resolved settings section (re-read per call/turn). */
 export type SettingsSectionReader = () => VerifierSettingsSection
@@ -270,79 +248,6 @@ function knownProvidersOf(ctx: Context): Set<string> {
   return names
 }
 
-/**
- * Register the verifier settings namespace and return a hot reader.
- * The settings seam is optional (delegate-and-degrade): without it the reader
- * yields the empty section and explicit plugin config carries everything.
- */
-export function sectionReaderOf(ctx: Context, config: Config): SettingsSectionReader {
-  let scope: { get(): unknown } | undefined
-  const register = (host: unknown): void => {
-    const settings = (host as { settings?: { register(ns: unknown, schema: unknown, options?: { base?: unknown }): unknown } }).settings
-    if (settings === undefined) return
-    try {
-      // The plugin config acts as the composition BASE for the settings
-      // section: the Web panel shows config-layered defaults (model mix,
-      // candidates, verify budget, criteria, endpoint) and only what the user
-      // changed in the panel overrides them. Empty primitives stay empty so a
-      // missing value reads as "unconfigured", never as a wrong default.
-      const base: Record<string, unknown> = {}
-      // Plugin-config keys → settings-section keys. Field names now MATCH
-      // Config exactly (one shared vocabulary), so this is an identity map.
-      //
-      // `verifier` and `boNModelMix` are DELIBERATELY not forwarded into the
-      // settings base: those two are panel-overridable user choices. Forwarding
-      // them would make the panel's "Restore defaults / empty" fall back to the
-      // plugin-config value (e.g. a profile patch's model mix) instead of the
-      // bundle default (empty = follow the session). The runtime still falls
-      // back to the plugin config when the section is UNSET — but an explicit
-      // panel value (including an explicit empty mix) wins over it.
-      const forward: Array<keyof Config> = [
-        'baseUrl',
-        'apiKey',
-        'model',
-        'timeoutMs',
-        'autoDegrade',
-        'boN',
-        'boNCandidates',
-        'samplingTemperature',
-        'samplingMode',
-        'timeoutMsBoN',
-        'verifyTimeoutMsBoN',
-        'showFooter',
-        'criteria',
-        'boNPivots',
-        'boNSeed',
-      ]
-      for (const key of forward) {
-        if (config[key] !== undefined) base[key] = config[key]
-      }
-      scope = settings.register(config.settingsNs ?? 'verifier-pro', SettingsSectionSchema, { base }) as unknown as { get(): unknown }
-    } catch (error) {
-      // Duplicate registration (or a schema conflict) — degrade to explicit config.
-      console.error(`[verifier-pro] settings namespace registration failed (${error instanceof Error ? error.message : String(error)}); falling back to explicit config only`)
-    }
-  }
-  // Preferred path: declare the settings dependency and register once it is
-  // available (the real host publishes it after our mount has started). A
-  // plain cordis context (tests) or an unavailable settings plugin degrades to
-  // occasional probes — never a hard failure.
-  const inject = (ctx as { inject?: (deps: readonly string[], cb: (sctx: Context) => void) => void }).inject
-  if (inject !== undefined) {
-    try {
-      inject(['settings'], (sctx: Context) => register(sctx))
-    } catch (error) {
-      console.error(`[verifier-pro] settings inject failed (${error instanceof Error ? error.message : String(error)}); explicit config only`)
-    }
-  } else {
-    register(ctx)
-  }
-  return () => {
-    // Hot re-read; register lazily in case the seam arrived after first use.
-    if (scope === undefined) register(ctx)
-    return (scope?.get() ?? {}) as VerifierSettingsSection
-  }
-}
 
 /** Resolve an explicit API-key override: `env:VAR` or a plain value. `credential:<name>` handled in resolveBackend. */
 function resolveApiKeyOverride(raw: string): string {
@@ -594,8 +499,10 @@ function formatUsage(usage?: TokenUsageSnapshot): string {
 export function apply(ctx: Context, config: Config): void {
   const cfg: Config = { ...config }
 
-  // Settings face: register the namespace once, read hot from here on.
-  const sectionReader = sectionReaderOf(ctx, cfg)
+  // dsh 0.1.7 derives settings from this plugin's Config schema and stores them
+  // in the profile patch, so there is no separate settings section to overlay:
+  // every `sectionReader().X ?? cfg.X` chain below resolves to cfg.X.
+  const sectionReader: SettingsSectionReader = () => ({})
 
   // Service face.
   const service = new VerifierService(ctx, cfg, sectionReader)
