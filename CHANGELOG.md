@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### Breaking — adapted to dsh 0.1.7, which redesigned settings twice over
+dsh 0.1.7 replaced `SettingsProvider` with `SettingsForms`: `register`, `get`
+and the scope object are gone, namespaces became Loader entry ids, the document
+moved from `~/.dsh/settings.yaml` into the profile patch, and the browser-side
+`settingsScope` service was removed. The plugin no longer touches that surface
+at all.
+- **The Web settings panel is removed** (`src/client.js`, the `./client` export
+  and the `dsh.client` entry). It hard-injected `settingsScope`, which left the
+  whole plugin `pending` and the host reporting "1 entry did not activate". dsh
+  does NOT auto-generate a replacement page: `describe()` returns nothing for a
+  plugin with no `.volatile()` fields, so configuration is the profile patch.
+- **The settings layer is gone, so the plugin config is the only layer.**
+  `sectionReaderOf`, `Config.settingsNs` and the `sectionReader` parameter are
+  deleted. An empty `boNModelMix` now means exactly "follow the session model";
+  the old "panel overrides config" semantics had no second layer left to come
+  from.
+- Configuration moves to the profile's `cordis.patch.yml` under the entry id
+  `llm-verifier-pro`. dsh imports an existing `~/.dsh/settings.yaml` itself and
+  renames it `settings.yaml.imported`, but only for sections it can match to an
+  entry id — a `verifier-pro:` section does not match and must be moved by hand.
+
+### Fixes
+- **Session provider endpoints resolved again.** `sessionProviderEndpoint` still
+  called `settings.get()`, which 0.1.7 removed, so it threw into its own catch
+  and returned `{}` for every input — the verifier silently lost the configured
+  gateway and fell through to the env chain. It now follows the mapping the
+  adapter itself publishes: `llm.listConfigurableProviders()` gives each route a
+  `settingsNs` (its owning entry id) and a `settingsPath` into that entry's
+  config. That removes both previous guesses — the hardcoded `providers` key and
+  the `llm-${provider}` id convention, which could never match `omni-chat` nor
+  `deepseek-official` (entry `llm-deepseek`).
+- `JsonValue` is declared locally; dsh-tools stopped re-exporting it in 0.1.7.
+
+### Development
+- devDependencies pin the exact runtime dsh version, so `npm run typecheck`
+  catches this class of break at build time instead of at boot.
+- 112 tests.
+
+
 ### Fixes — Best-of-N sampling kept producing "0 usable" rollouts
 Root cause: every assistant turn was sampled N ways, **including tool-call
 turns** (the common case on agentic work — reading files, running commands).

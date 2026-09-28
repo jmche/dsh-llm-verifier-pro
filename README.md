@@ -76,8 +76,9 @@ It is one switch: `boN: true` in the plugin config turns the mode on for every
 conversation at `boNCandidates`; anything else is off.
 
 > **Behavior change (dsh 0.1.7):** there is no settings layer above the plugin
-> config any more, and no `bo-n` session preset. The plugin config is the only
-> place the switch lives — see [Configuration](#configuration).
+> config any more, so the plugin config is the only place the switch lives —
+> see [Configuration](#configuration). (The `bo-n` session-preset tier is a
+> separate, earlier removal — this plugin's own 0.2.0.)
 
 **Model mix (candidate diversity).** Candidate 0 always rides the
 conversation's own model (the greedy anchor). Each later slot draws a
