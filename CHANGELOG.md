@@ -13,6 +13,9 @@ at all.
   whole plugin `pending` and the host reporting "1 entry did not activate". dsh
   does NOT auto-generate a replacement page: `describe()` returns nothing for a
   plugin with no `.volatile()` fields, so configuration is the profile patch.
+  (A panel is recoverable: marking the Bo-N fields `.volatile()` would put them
+  back in the plugin-manager form, at the cost of reading them through the
+  container schemastery wraps volatile values in.)
 - **The settings layer is gone, so the plugin config is the only layer.**
   `sectionReaderOf`, `Config.settingsNs` and the `sectionReader` parameter are
   deleted. An empty `boNModelMix` now means exactly "follow the session model";

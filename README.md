@@ -70,9 +70,7 @@ file, running a command, calling a tool), the turn is replayed exactly as
 produced: Best-of-N ranks text answers only, and sampling a working turn
 would waste tokens and produce unusable candidates. The decision is
 re-evaluated per turn and is deliberately **all-or-nothing — the mode covers
-every conversation, there is no per-session tier**:
-
-It is one switch: `boN: true` in the plugin config turns the mode on for every
+every conversation, there is no per-session tier**. It is one switch: `boN: true` in the plugin config turns the mode on for every
 conversation at `boNCandidates`; anything else is off.
 
 > **Behavior change (dsh 0.1.7):** there is no settings layer above the plugin
@@ -218,7 +216,7 @@ deployment knobs rather than things a user tunes per turn.
 
 ```bash
 npm install
-npm run check      # typecheck + tests (110 tests)
+npm run check      # typecheck + tests (112 tests)
 npm run build      # tsc
 ```
 
