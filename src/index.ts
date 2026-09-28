@@ -148,31 +148,54 @@ export interface Config {
  */
 export type ModelMixEntry = string | { provider?: string; model: string }
 
-export const Config: z<Config> = z.object({
-  baseUrl: z.string(),
+/**
+ * `.volatile()` fields are what dsh 0.1.7 builds the Plugins-page form from
+ * (dsh-settings `describe()` skips an entry with none), and the Loader commits
+ * an edit to them into the running references without remounting. They are
+ * read per call through {@link currentConfig}. `apiKey` (a secret), the
+ * `deepseek`/`prefill` call-path overrides and the tool registration flags
+ * stay ordinary: editing them in the profile patch remounts the plugin.
+ */
+export const Config = z.object({
+  baseUrl: z.string().volatile(),
   apiKey: z.string(),
-  model: z.string(),
-  verifier: z.string(),
-  timeoutMs: z.number(),
-  maxConcurrency: z.number(),
+  model: z.string().volatile(),
+  verifier: z.string().volatile(),
+  timeoutMs: z.number().volatile(),
+  maxConcurrency: z.number().volatile(),
   deepseek: z.boolean(),
   prefill: z.boolean(),
-  autoDegrade: z.boolean().default(true),
+  autoDegrade: z.boolean().default(true).volatile(),
   compare: z.boolean().default(true),
   select: z.boolean().default(true),
   track: z.boolean().default(true),
-  boN: z.boolean().default(false),
-  boNCandidates: z.number().default(5),
-  samplingTemperature: z.number().default(0.7),
-  samplingMode: z.string().default('parallel'),
-  timeoutMsBoN: z.number().default(300_000),
-  verifyTimeoutMsBoN: z.number().default(300_000),
-  showFooter: z.boolean().default(true),
-  criteria: z.array(z.string()).default([]),
-  boNPivots: z.number().default(2),
-  boNSeed: z.number().default(0),
-  boNModelMix: z.array(z.union([z.string(), z.object({ provider: z.string(), model: z.string() })])).default([]),
+  boN: z.boolean().default(false).volatile(),
+  boNCandidates: z.number().default(5).volatile(),
+  samplingTemperature: z.number().default(0.7).volatile(),
+  samplingMode: z.string().default('parallel').volatile(),
+  timeoutMsBoN: z.number().default(300_000).volatile(),
+  verifyTimeoutMsBoN: z.number().default(300_000).volatile(),
+  showFooter: z.boolean().default(true).volatile(),
+  criteria: z.array(z.string()).default([]).volatile(),
+  boNPivots: z.number().default(2).volatile(),
+  boNSeed: z.number().default(0).volatile(),
+  boNModelMix: z.array(z.union([z.string(), z.object({ provider: z.string(), model: z.string() })])).default([]).volatile(),
 })
+
+/**
+ * The plain config values as of now. A Loader-parsed config holds volatile
+ * fields as `{ get() }` references; a config built by hand (tests, embedders)
+ * holds plain values. Both read the same.
+ */
+export function currentConfig(config: Config): Config {
+  const plain: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(config)) {
+    plain[key] = typeof value === 'object' && value !== null && !Array.isArray(value) && typeof (value as { get?: unknown }).get === 'function'
+      ? (value as { get(): unknown }).get()
+      : value
+  }
+  return plain as Config
+}
 
 
 /**
@@ -401,7 +424,7 @@ export class VerifierService extends Service {
 
   private async backendFor(conversation?: GenerateOptions): Promise<VerifierBackend> {
     // Lazy per-call resolution: a missing key fails the CALL, not the mount.
-    return resolveBackend(this.ctx, this.config, conversation)
+    return resolveBackend(this.ctx, currentConfig(this.config), conversation)
   }
 
   /** Rank N candidates best-first with the PPT. */
@@ -713,8 +736,9 @@ export function apply(ctx: Context, config: Config): void {
     if ((options as { purpose?: unknown }).purpose !== undefined) return next()
     const sessionId = (options as { sessionId?: string }).sessionId
     if (sessionId === undefined) return next()
-    // One switch (cfg.boN), fail-open.
+    // One switch (cfg.boN), fail-open. Read per turn: a panel edit applies to the next turn.
     return (async function* boNTurn(): AsyncGenerator<StreamChunk> {
+      const cfg = currentConfig(config)
       const decision = resolveBoNMode(cfg)
       if (!decision.enabled) {
         yield* next()

@@ -180,6 +180,16 @@ vLLM/SGLang prefill pass so score tags land exactly at the label position.
     showFooter: true
 ```
 
+### Configuring in the Web UI
+
+Open **Plugins → dsh-llm-verifier-pro** in `dsh web`: the bundle page carries a
+form for every parameter below except `apiKey`, `deepseek`, `prefill` and
+`compare`/`select`/`track`. **Save** writes the same `cordis.patch.yml` block
+shown above, and the change applies to the next turn without a restart (the
+form's fields are `.volatile()` Config fields, which the Loader commits into
+the running plugin). The excluded fields are edited in the patch; changing one
+there remounts the plugin.
+
 ### Parameters
 
 Every parameter lives in the plugin config (the profile's `cordis.patch.yml`)

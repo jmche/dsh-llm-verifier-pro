@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Web configuration form restored (Plugins page)
+dsh 0.1.7 draws no form for a third-party plugin by itself: `dsh-settings`
+serves only `.volatile()` Config fields, and the Plugins page renders only
+pages a plugin registers. Both halves are now in place:
+- The panel fields (`verifier`, `baseUrl`, `model`, `timeoutMs`,
+  `maxConcurrency`, `autoDegrade` and every Bo-N field) are `.volatile()`.
+  The plugin reads them per call/turn through `currentConfig()`, so a saved
+  edit applies to the next turn without remounting. `apiKey`, `deepseek`,
+  `prefill` and `compare`/`select`/`track` stay ordinary fields.
+- A browser half (`src/client.js`, `dsh.client`, the `./client` export)
+  registers the form into `plugins.bundle.config` under the package name,
+  through `ctx.configForms`, only while the Host serves the `llm-verifier-pro`
+  entry. It injects only services dsh 0.1.7 ships (`slots`, `locale`,
+  `configForms`) — the earlier panel hung `pending` on the removed
+  `settingsScope`.
+- `boNModelMix` and `criteria` are edited as `;`-separated text; a mix entry
+  stored as `{ provider, model }` is shown, and saved back, as `provider/model`,
+  which the plugin resolves to the same route while that provider is one
+  `llm.listProviders()` reports.
+
 ### Breaking — adapted to dsh 0.1.7, which redesigned settings twice over
 dsh 0.1.7 replaced `SettingsProvider` with `SettingsForms`: `register`, `get`
 and the scope object are gone, namespaces became Loader entry ids, the document

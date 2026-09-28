@@ -123,7 +123,81 @@ export type ModelMixEntry = string | {
     provider?: string;
     model: string;
 };
-export declare const Config: z<Config>;
+/**
+ * `.volatile()` fields are what dsh 0.1.7 builds the Plugins-page form from
+ * (dsh-settings `describe()` skips an entry with none), and the Loader commits
+ * an edit to them into the running references without remounting. They are
+ * read per call through {@link currentConfig}. `apiKey` (a secret), the
+ * `deepseek`/`prefill` call-path overrides and the tool registration flags
+ * stay ordinary: editing them in the profile patch remounts the plugin.
+ */
+export declare const Config: z<Schemastery.ObjectS<NoInfer<{
+    baseUrl: z<string, string, "volatile">;
+    apiKey: z<string, string, "plain">;
+    model: z<string, string, "volatile">;
+    verifier: z<string, string, "volatile">;
+    timeoutMs: z<number, number, "volatile">;
+    maxConcurrency: z<number, number, "volatile">;
+    deepseek: z<boolean, boolean, "plain">;
+    prefill: z<boolean, boolean, "plain">;
+    autoDegrade: z<boolean, boolean, "volatile-defined">;
+    compare: z<boolean, boolean, "defined">;
+    select: z<boolean, boolean, "defined">;
+    track: z<boolean, boolean, "defined">;
+    boN: z<boolean, boolean, "volatile-defined">;
+    boNCandidates: z<number, number, "volatile-defined">;
+    samplingTemperature: z<number, number, "volatile-defined">;
+    samplingMode: z<string, string, "volatile-defined">;
+    timeoutMsBoN: z<number, number, "volatile-defined">;
+    verifyTimeoutMsBoN: z<number, number, "volatile-defined">;
+    showFooter: z<boolean, boolean, "volatile-defined">;
+    criteria: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    boNPivots: z<number, number, "volatile-defined">;
+    boNSeed: z<number, number, "volatile-defined">;
+    boNModelMix: z<NoInfer<(string | ({
+        provider?: string | null | undefined;
+        model?: string | null | undefined;
+    } & import("@deepseek-ai/cosmokit").Dict))[]>, NoInfer<(string | Schemastery.ObjectT<NoInfer<{
+        provider: z<string, string, "plain">;
+        model: z<string, string, "plain">;
+    }>>)[]>, "volatile-defined">;
+}>>, Schemastery.ObjectT<NoInfer<{
+    baseUrl: z<string, string, "volatile">;
+    apiKey: z<string, string, "plain">;
+    model: z<string, string, "volatile">;
+    verifier: z<string, string, "volatile">;
+    timeoutMs: z<number, number, "volatile">;
+    maxConcurrency: z<number, number, "volatile">;
+    deepseek: z<boolean, boolean, "plain">;
+    prefill: z<boolean, boolean, "plain">;
+    autoDegrade: z<boolean, boolean, "volatile-defined">;
+    compare: z<boolean, boolean, "defined">;
+    select: z<boolean, boolean, "defined">;
+    track: z<boolean, boolean, "defined">;
+    boN: z<boolean, boolean, "volatile-defined">;
+    boNCandidates: z<number, number, "volatile-defined">;
+    samplingTemperature: z<number, number, "volatile-defined">;
+    samplingMode: z<string, string, "volatile-defined">;
+    timeoutMsBoN: z<number, number, "volatile-defined">;
+    verifyTimeoutMsBoN: z<number, number, "volatile-defined">;
+    showFooter: z<boolean, boolean, "volatile-defined">;
+    criteria: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    boNPivots: z<number, number, "volatile-defined">;
+    boNSeed: z<number, number, "volatile-defined">;
+    boNModelMix: z<NoInfer<(string | ({
+        provider?: string | null | undefined;
+        model?: string | null | undefined;
+    } & import("@deepseek-ai/cosmokit").Dict))[]>, NoInfer<(string | Schemastery.ObjectT<NoInfer<{
+        provider: z<string, string, "plain">;
+        model: z<string, string, "plain">;
+    }>>)[]>, "volatile-defined">;
+}>>, "plain">;
+/**
+ * The plain config values as of now. A Loader-parsed config holds volatile
+ * fields as `{ get() }` references; a config built by hand (tests, embedders)
+ * holds plain values. Both read the same.
+ */
+export declare function currentConfig(config: Config): Config;
 /**
  * Normalize one model-mix value to the runtime entry shape (`string` or
  * `{ provider, model }`). A plugin-config value may be an object or a string.
