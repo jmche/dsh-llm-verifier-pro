@@ -6,6 +6,8 @@ import { Context } from '@deepseek-ai/cordis'
 import { apply, resolveJev, type Config } from '../src/index'
 import { JevBackend, JEV_LEVELS, systemOneEndpoint } from '../src/jev'
 import { Verifier } from '../src/verifier'
+import { verifyBest } from '../src/bon'
+import { VerifierBackend } from '../src/backend'
 import { VerifierError } from '../src/backend'
 
 /**
@@ -21,7 +23,7 @@ interface MockSystemOne {
   baseUrl: string
   requests: Logged[]
   /** HTTP statuses to answer the next systemone requests with, before scoring normally. */
-  failures: Array<{ status: number; body?: unknown }>
+  failures: Array<{ status: number; body?: unknown; headers?: Record<string, string> }>
   close(): Promise<void>
 }
 
@@ -45,13 +47,13 @@ async function createMockSystemOne(): Promise<MockSystemOne> {
       const body = JSON.parse(data || '{}') as Record<string, unknown>
       const path = new URL(req.url ?? '/', 'http://localhost').pathname
       requests.push({ path, body, auth: req.headers.authorization })
-      const respond = (status: number, payload: unknown) => {
-        res.writeHead(status, { 'content-type': 'application/json' })
+      const respond = (status: number, payload: unknown, headers: Record<string, string> = {}) => {
+        res.writeHead(status, { 'content-type': 'application/json', ...headers })
         res.end(JSON.stringify(payload))
       }
       if (path !== '/v1/systemone') return respond(404, { error: `unexpected ${path}` })
       const failure = failures.shift()
-      if (failure) return respond(failure.status, failure.body ?? { detail: 'mock failure' })
+      if (failure) return respond(failure.status, failure.body ?? { detail: 'mock failure' }, failure.headers)
       const state = body.state as Record<string, unknown>
       respond(200, {
         model: 'jev-mock',
@@ -128,6 +130,52 @@ describe('JevBackend.scorePair', () => {
   })
 })
 
+describe('JevBackend failure edges', () => {
+  it('an abort during the retry wait rejects at once, not after Retry-After', async () => {
+    mock = await createMockSystemOne()
+    mock.failures.push({ status: 429, headers: { 'retry-after': '30' } })
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(new Error('cancelled')), 100)
+    const started = Date.now()
+    const error = await new JevBackend({ baseUrl: mock.baseUrl }).scorePair('t', 'a', 'b', { name: 'c', description: 'c' }, '', controller.signal).catch((e: unknown) => e)
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(error).toBeInstanceOf(Error)
+  })
+
+  it('caps Retry-After at the request timeout', async () => {
+    mock = await createMockSystemOne()
+    mock.failures.push({ status: 429, headers: { 'retry-after': '3600' } })
+    const started = Date.now()
+    const [ra] = await new JevBackend({ baseUrl: mock.baseUrl, timeoutMs: 200 }).scorePair('t', 'GOOD', 'b', { name: 'c', description: 'c' })
+    expect(ra).toBe(1)
+    expect(Date.now() - started).toBeLessThan(2000)
+  })
+
+  it('gives up with the status after the retries run out', async () => {
+    mock = await createMockSystemOne()
+    for (let i = 0; i < 4; i++) mock.failures.push({ status: 429, headers: { 'retry-after': '0.01' } })
+    const error = await new JevBackend({ baseUrl: mock.baseUrl }).scorePair('t', 'a', 'b', { name: 'c', description: 'c' }).catch((e: unknown) => e)
+    expect((error as VerifierError).status).toBe(429)
+    expect(mock.requests).toHaveLength(4)
+  })
+})
+
+describe('verifyBest with the Jev selector', () => {
+  it('maps swapped-slot rewards back to candidate order', async () => {
+    mock = await createMockSystemOne()
+    const jev = new JevBackend({ baseUrl: mock.baseUrl })
+    // nEvaluations 2: the odd rep swaps the slots. A wrong swap-back would
+    // hand the weak candidates the GOOD score half the time.
+    const result = await verifyBest(new VerifierBackend({}), 'unused', 'pick', ['weak 0', 'GOOD 1', 'weak 2'], { jev, nEvaluations: 2 })
+    expect(result.bestIndex).toBe(1)
+    const byIndex = new Map(result.ranking.map((r) => [r.index, r.normalized]))
+    expect(byIndex.get(1)! - byIndex.get(0)!).toBeGreaterThan(0.2)
+    expect(byIndex.get(0)).toBeCloseTo(byIndex.get(2)!)
+    expect(mock.requests.some((r) => (r.body.state as { response_A: string }).response_A === 'GOOD 1')).toBe(true)
+    expect(mock.requests.some((r) => (r.body.state as { response_B: string }).response_B === 'GOOD 1')).toBe(true)
+  })
+})
+
 describe('Verifier with the Jev selector', () => {
   it('select ranks with Jev and never calls the LLM verifier; track is untouched', async () => {
     mock = await createMockSystemOne()
@@ -144,9 +192,9 @@ describe('Verifier with the Jev selector', () => {
 
 describe('resolveJev', () => {
   const ctx = new Context()
-  it('is off unless selector is jev', async () => {
+  it('is off unless selector is jev, and never resolves the Jev key when off', async () => {
     expect(await resolveJev(ctx, {} as Config)).toBeUndefined()
-    expect(await resolveJev(ctx, { selector: 'llm' } as Config)).toBeUndefined()
+    expect(await resolveJev(ctx, { selector: 'llm', jevApiKey: 'env:JEV_UNSET_KEY' } as Config)).toBeUndefined()
   })
   it('defaults to TypeSafe and resolves an env: key', async () => {
     process.env.JEV_TEST_KEY = 'from-env'

@@ -431,7 +431,11 @@ export async function resolveBackend(
  * come only from the jev* fields — never from the LLM verifier's endpoint.
  */
 export async function resolveJev(ctx: Context, config: Config): Promise<JevBackend | undefined> {
-  if ((config.selector ?? 'llm').trim() !== 'jev') return undefined
+  const selector = (config.selector ?? 'llm').trim()
+  if (selector !== 'jev') {
+    if (selector !== 'llm' && selector !== '') console.error(`[verifier] unknown selector "${selector}" — using the LLM verifier (expected 'llm' or 'jev')`)
+    return undefined
+  }
   const explicit = (config.jevApiKey ?? '').trim()
   const jev = new JevBackend({
     baseUrl: config.jevBaseUrl,
@@ -565,7 +569,7 @@ export function apply(ctx: Context, config: LiveConfig | Config): void {
     ctx.tools.register(defineTool({
       name: 'verify_compare',
       description:
-        'Score two candidate solutions/trajectories against evaluation criteria with a fine-grained reward model: the verifier distribution over a 20-letter scale is read at the score-tag logprobs and normalized to [0,1]. Returns (scoreA, scoreB) plus token usage.',
+        'Score two candidate solutions/trajectories against evaluation criteria with a fine-grained reward model: the expected score over the verifier\'s probability distribution (score-tag logprobs, or a Jev Score question when the Jev selector is on), normalized to [0,1]. Returns (scoreA, scoreB) plus token usage.',
       parameters: {
         problem: { type: 'string', required: true, description: 'The task description both candidates attempt to solve.' },
         candidateA: { type: 'string', required: true, description: 'First candidate (code, plan, or agent trajectory).' },

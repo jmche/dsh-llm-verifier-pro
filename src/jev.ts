@@ -55,6 +55,22 @@ export interface JevCriterion {
   description: string
 }
 
+/** Wait `ms`, rejecting as soon as `signal` aborts. */
+function backoff(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal?.reason)
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 /** The System One endpoint for a configured base: `<base>/systemone`, or the base itself when it already is one. */
 export function systemOneEndpoint(baseUrl: string): string {
   const base = baseUrl.trim().replace(/\/+$/, '')
@@ -71,7 +87,7 @@ export function scoreReward(answer: unknown, levels: number): number {
   let mass = 0
   for (const [level, p] of Object.entries(probabilities)) {
     const index = Number(level)
-    if (!Number.isInteger(index) || typeof p !== 'number' || !Number.isFinite(p)) continue
+    if (!Number.isInteger(index) || index < 0 || index >= levels || typeof p !== 'number' || !Number.isFinite(p)) continue
     expected += index * p
     mass += p
   }
@@ -117,9 +133,13 @@ export class JevBackend {
           signal: controller.signal,
         })
         if ((res.status === 429 || res.status === 529) && attempt < MAX_RETRIES) {
+          await res.body?.cancel().catch(() => {})
           const retryAfter = Number(res.headers.get('retry-after'))
-          const delay = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 500 * 2 ** attempt
-          await new Promise((resolve) => setTimeout(resolve, delay))
+          const delay = Math.min(
+            Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 500 * 2 ** attempt,
+            this.config.timeoutMs,
+          )
+          await backoff(delay, signal)
           continue
         }
         if (!res.ok) {
