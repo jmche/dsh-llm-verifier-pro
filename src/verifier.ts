@@ -265,7 +265,8 @@ export class Verifier {
             if (job.swap) [ra, rb] = [rb, ra] // scores back in candidate order
             cache.set(job.key, { score_A: ra, score_B: rb })
           } catch (error) {
-            if (onError === 'raise') throw error
+            // A caller abort stops the selection; only verifier failures become ties.
+            if (onError === 'raise' || opts.signal?.aborted) throw error
             cache.set(job.key, { score_A: 0.5, score_B: 0.5 })
           }
         }),

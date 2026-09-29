@@ -19,7 +19,18 @@
   `retry-after`), as the provider documents; any other failure — including
   HTTP 400 `max_tokens_exceeded` past Jev's 32k state budget — surfaces as a
   `VerifierError` and fails open like the LLM path. The Bo-N footer shows
-  `· Jev` when Jev ranked the turn.
+  `· Jev` when Jev ranked the turn. The backoff is abortable and a
+  `Retry-After` is capped at the request timeout.
+- With `selector: jev`, an LLM verifier config that cannot resolve (e.g. a
+  missing `credential:` key) is logged and no longer blocks Jev from ranking;
+  `verify_track` still needs it. An unknown `selector` value warns once.
+
+### Verify deadline and cancellation (both selectors)
+- The Bo-N verify deadline now aborts every in-flight verifier request
+  (LLM or Jev) instead of only abandoning the wait; the LLM comparisons of
+  Best-of-N now receive the cancellation signal at all.
+- `verify_select` with `onError: 'tie'` no longer records a caller abort as
+  0.5/0.5 ties: an aborted selection rejects.
 
 ### Web configuration form restored (Plugins page)
 dsh 0.1.7 draws no form for a third-party plugin by itself: `dsh-settings`

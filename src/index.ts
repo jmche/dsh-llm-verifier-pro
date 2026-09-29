@@ -426,6 +426,30 @@ export async function resolveBackend(
 }
 
 /**
+ * The backends for pairwise scoring. With the Jev selector the LLM verifier
+ * scores nothing here, so a failure to resolve it (e.g. a missing
+ * `credential:` key) is logged and does not block Jev; the placeholder is
+ * never asked to score a comparison.
+ */
+export async function resolvePairBackends(
+  ctx: Context,
+  config: Config,
+  conversation?: GenerateOptions,
+): Promise<{ backend: VerifierBackend; jev?: JevBackend }> {
+  const jev = await resolveJev(ctx, config)
+  if (!jev) return { backend: await resolveBackend(ctx, config, conversation) }
+  try {
+    return { backend: await resolveBackend(ctx, config, conversation), jev }
+  } catch (error) {
+    console.error(`[verifier] LLM verifier config unavailable (${error instanceof Error ? error.message : String(error)}); Jev scores the comparisons`)
+    return { backend: new VerifierBackend({}), jev }
+  }
+}
+
+/** Unknown selector values already warned about (one warning per value, not per call). */
+const warnedSelectors = new Set<string>()
+
+/**
  * The Jev selector for this call, or `undefined` when `config.selector` is not
  * `jev` (the LLM verifier scores the comparisons). The endpoint, model and key
  * come only from the jev* fields — never from the LLM verifier's endpoint.
@@ -433,7 +457,10 @@ export async function resolveBackend(
 export async function resolveJev(ctx: Context, config: Config): Promise<JevBackend | undefined> {
   const selector = (config.selector ?? 'llm').trim()
   if (selector !== 'jev') {
-    if (selector !== 'llm' && selector !== '') console.error(`[verifier] unknown selector "${selector}" — using the LLM verifier (expected 'llm' or 'jev')`)
+    if (selector !== 'llm' && selector !== '' && !warnedSelectors.has(selector)) {
+      warnedSelectors.add(selector)
+      console.error(`[verifier] unknown selector "${selector}" — using the LLM verifier (expected 'llm' or 'jev')`)
+    }
     return undefined
   }
   const explicit = (config.jevApiKey ?? '').trim()
@@ -485,15 +512,14 @@ export class VerifierService extends Service {
     return resolveBackend(this.ctx, currentConfig(this.config), conversation)
   }
 
-  private async jevFor(): Promise<JevBackend | undefined> {
-    return resolveJev(this.ctx, currentConfig(this.config))
+  private async pairBackends(): Promise<{ backend: VerifierBackend; jev?: JevBackend }> {
+    return resolvePairBackends(this.ctx, currentConfig(this.config))
   }
 
   /** Rank N candidates best-first with the PPT. */
   async verify(options: { task: string; candidates: readonly string[]; criteria?: Record<string, string>; pivots?: number; seed?: number; nEvaluations?: number }): Promise<{ bestIndex: number; ranking: { index: number; score: number; normalized: number }[]; callsSpent: number }> {
     if (options.candidates.length < 2) throw new Error('verifier: at least 2 candidates are required')
-    const backend = await this.backendFor()
-    const jev = await this.jevFor()
+    const { backend, jev } = await this.pairBackends()
     const result = await verifyBest(backend, backend.config.model ?? 'deepseek-v4-flash', options.task, options.candidates, {
       criteria: options.criteria ? Object.keys(options.criteria) : undefined,
       pivots: options.pivots,
@@ -506,15 +532,15 @@ export class VerifierService extends Service {
 
   /** Fine-grained rewards for one directed comparison. */
   async compare(problem: string, traceA: string, traceB: string, criteriaInput: Record<string, string>, opts?: CompareOptions): Promise<{ scoreA: number; scoreB: number; criteria: string[]; usage: TokenUsageSnapshot }> {
-    const backend = await this.backendFor()
-    const verifier = new Verifier(backend.config, await this.jevFor())
+    const { backend, jev } = await this.pairBackends()
+    const verifier = new Verifier(backend.config, jev)
     return verifier.compare(problem, traceA, traceB, criteriaInput, opts)
   }
 
   /** PPT best-of-N selection (tool face parity). */
   async select(problem: string, candidates: string[], criteriaInput: Record<string, string>, opts?: SelectOptions): Promise<{ index: number; best: string; scores: number[]; ranking: number[]; nComparisons: number; criteria: string[]; usage: TokenUsageSnapshot }> {
-    const backend = await this.backendFor()
-    const verifier = new Verifier(backend.config, await this.jevFor())
+    const { backend, jev } = await this.pairBackends()
+    const verifier = new Verifier(backend.config, jev)
     return verifier.select(problem, candidates, criteriaInput, opts)
   }
 
@@ -559,7 +585,7 @@ export function apply(ctx: Context, config: LiveConfig | Config): void {
       'Use the verify_* tools to get fine-grained probabilistic feedback on ' +
       'your own work before committing to it: verify_compare scores two ' +
       'candidates against evaluation criteria (expected score over the ' +
-      "verifier's logprob distribution); verify_select picks the best of N " +
+      "verifier's score distribution); verify_select picks the best of N " +
       'candidates with a Probabilistic Pivot Tournament (O(Nk) comparisons, ' +
       'cheaper than a full round-robin); verify_track scores your progress ' +
       'after each step.',
@@ -606,8 +632,8 @@ export function apply(ctx: Context, config: LiveConfig | Config): void {
       timeoutMs: 120_000,
       isConcurrencySafe: () => true,
       async execute(args, exec) {
-        const backend = await backendFor()
-        const verifier = new Verifier(backend.config, await service['jevFor']())
+        const { backend, jev } = await service['pairBackends']()
+        const verifier = new Verifier(backend.config, jev)
         const result = await verifier.compare(args.problem, args.candidateA, args.candidateB, args.criteria as Record<string, string>, {
           nEvaluations: args.nEvaluations ?? 1,
           groundTruthNote: args.groundTruthNote,
@@ -661,8 +687,8 @@ export function apply(ctx: Context, config: LiveConfig | Config): void {
       timeoutMs: 360_000,
       isConcurrencySafe: () => true,
       async execute(args, exec) {
-        const backend = await backendFor()
-        const verifier = new Verifier(backend.config, await service['jevFor']())
+        const { backend, jev } = await service['pairBackends']()
+        const verifier = new Verifier(backend.config, jev)
         const result = await verifier.select(args.problem, args.candidates, args.criteria as Record<string, string>, {
           nEvaluations: args.nEvaluations ?? 4,
           pivots: args.pivots ?? 2,
@@ -814,8 +840,7 @@ export function apply(ctx: Context, config: LiveConfig | Config): void {
       let backend: VerifierBackend
       let jev: JevBackend | undefined
       try {
-        backend = await resolveBackend(ctx, cfg, options)
-        jev = await resolveJev(ctx, cfg)
+        ;({ backend, jev } = await resolvePairBackends(ctx, cfg, options))
       } catch (error) {
         console.error(`[bo-n] verifier config unavailable, degrading to normal answer: ${error instanceof Error ? error.message : String(error)}`)
         yield* next()

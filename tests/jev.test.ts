@@ -24,6 +24,10 @@ interface MockSystemOne {
   requests: Logged[]
   /** HTTP statuses to answer the next systemone requests with, before scoring normally. */
   failures: Array<{ status: number; body?: unknown; headers?: Record<string, string> }>
+  /** Delay every scored answer by this many ms. */
+  delayMs: number
+  /** Requests the client dropped before the answer was written. */
+  aborted: number
   close(): Promise<void>
 }
 
@@ -40,6 +44,7 @@ const levelOf = (text: unknown) => (typeof text === 'string' && text.includes('G
 async function createMockSystemOne(): Promise<MockSystemOne> {
   const requests: Logged[] = []
   const failures: MockSystemOne['failures'] = []
+  const control = { delayMs: 0, aborted: 0 }
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     let data = ''
     req.on('data', (chunk: Buffer) => (data += chunk.toString()))
@@ -55,11 +60,14 @@ async function createMockSystemOne(): Promise<MockSystemOne> {
       const failure = failures.shift()
       if (failure) return respond(failure.status, failure.body ?? { detail: 'mock failure' }, failure.headers)
       const state = body.state as Record<string, unknown>
-      respond(200, {
+      res.on('close', () => { if (!res.writableEnded) control.aborted++ })
+      const answer = () => respond(200, {
         model: 'jev-mock',
         answers: { score_A: scoreAnswer(levelOf(state.response_A)), score_B: scoreAnswer(levelOf(state.response_B)) },
         usage: { input_tokens: 300, output_tokens: 20 },
       })
+      if (control.delayMs > 0) setTimeout(() => { if (!res.destroyed) answer() }, control.delayMs)
+      else answer()
     })
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -68,6 +76,10 @@ async function createMockSystemOne(): Promise<MockSystemOne> {
     baseUrl: `http://127.0.0.1:${port}/v1`,
     requests,
     failures,
+    get delayMs() { return control.delayMs },
+    set delayMs(ms: number) { control.delayMs = ms },
+    get aborted() { return control.aborted },
+    set aborted(n: number) { control.aborted = n },
     close: () => new Promise((resolve) => server.close(() => resolve())),
   }
 }
@@ -139,7 +151,7 @@ describe('JevBackend failure edges', () => {
     const started = Date.now()
     const error = await new JevBackend({ baseUrl: mock.baseUrl }).scorePair('t', 'a', 'b', { name: 'c', description: 'c' }, '', controller.signal).catch((e: unknown) => e)
     expect(Date.now() - started).toBeLessThan(2000)
-    expect(error).toBeInstanceOf(Error)
+    expect(String((error as Error).message)).toContain('cancelled')
   })
 
   it('caps Retry-After at the request timeout', async () => {
@@ -148,7 +160,9 @@ describe('JevBackend failure edges', () => {
     const started = Date.now()
     const [ra] = await new JevBackend({ baseUrl: mock.baseUrl, timeoutMs: 200 }).scorePair('t', 'GOOD', 'b', { name: 'c', description: 'c' })
     expect(ra).toBe(1)
-    expect(Date.now() - started).toBeLessThan(2000)
+    const waited = Date.now() - started
+    expect(waited).toBeGreaterThanOrEqual(150)
+    expect(waited).toBeLessThan(2000)
   })
 
   it('gives up with the status after the retries run out', async () => {
@@ -190,8 +204,30 @@ describe('Verifier with the Jev selector', () => {
   })
 })
 
+describe('cancellation with the Jev selector', () => {
+  it('a caller abort rejects select instead of being scored as ties', async () => {
+    mock = await createMockSystemOne()
+    mock.delayMs = 2000
+    const verifier = new Verifier({}, new JevBackend({ baseUrl: mock.baseUrl }))
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(new Error('cancelled')), 100)
+    const outcome = await verifier.select('pick', ['a', 'b', 'c'], { C: 'c' }, { nEvaluations: 1, signal: controller.signal }).then(
+      () => 'resolved',
+      () => 'rejected',
+    )
+    expect(outcome).toBe('rejected')
+  })
+})
+
 describe('resolveJev', () => {
   const ctx = new Context()
+  it('warns once per unknown selector value', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await resolveJev(ctx, { selector: 'JEV-typo' } as Config)
+    await resolveJev(ctx, { selector: 'JEV-typo' } as Config)
+    expect(spy.mock.calls.filter((call) => String(call[0]).includes('JEV-typo'))).toHaveLength(1)
+    spy.mockRestore()
+  })
   it('is off unless selector is jev, and never resolves the Jev key when off', async () => {
     expect(await resolveJev(ctx, {} as Config)).toBeUndefined()
     expect(await resolveJev(ctx, { selector: 'llm', jevApiKey: 'env:JEV_UNSET_KEY' } as Config)).toBeUndefined()
@@ -218,7 +254,42 @@ function textStream(text: string): AsyncIterable<StreamChunk> {
   })()
 }
 
+/** Apply the plugin with a faithful llm seam; candidate 1 is the good one, the anchor and candidate 2 are weak. */
+function boNHarness(cfg: Partial<Config>) {
+  const ctx = new Context()
+  ;(ctx as unknown as { systemPrompt: unknown }).systemPrompt = { section: vi.fn() }
+  ;(ctx as unknown as { tools: unknown }).tools = { register: vi.fn() }
+  const waterfall = (ctx as unknown as { waterfall: (...args: unknown[]) => unknown }).waterfall.bind(ctx)
+  let slot = 0
+  ;(ctx as unknown as { llm: unknown }).llm = {
+    stream: (opts: GenerateOptions) => waterfall('llm/stream', opts, () => textStream(++slot === 1 ? 'GOOD candidate answer' : 'weak candidate answer')),
+  }
+  apply(ctx, { boN: true, boNCandidates: 3, showFooter: true, verifyTimeoutMsBoN: 5000, timeoutMsBoN: 5000, selector: 'jev', jevBaseUrl: mock!.baseUrl, ...cfg } as Config)
+  return async (): Promise<string> => {
+    const request = { provider: 'omni-chat', model: 'm', messages: [{ role: 'user', content: 'Answer well.' }], sessionId: 'sess-jev' } as unknown as GenerateOptions
+    const out: StreamChunk[] = []
+    for await (const chunk of waterfall('llm/stream', request, () => textStream('weak anchor answer')) as AsyncIterable<StreamChunk>) out.push(chunk)
+    return out.filter((c) => c.type === 'text-delta').map((c) => (c as { text: string }).text).join('')
+  }
+}
+
 describe('Bo-N turn with selector: jev', () => {
+  it('still ranks with Jev when the LLM verifier config cannot resolve', async () => {
+    mock = await createMockSystemOne()
+    const text = await boNHarness({ apiKey: 'credential:MISSING_LLM_KEY' })()
+    expect(text).toContain('GOOD candidate answer')
+    expect(text).toContain('· Jev ·')
+  })
+
+  it('the verify deadline aborts in-flight Jev requests', async () => {
+    mock = await createMockSystemOne()
+    mock.delayMs = 3000
+    const text = await boNHarness({ verifyTimeoutMsBoN: 200 })()
+    expect(text).toContain('Best-of-N skipped')
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(mock.aborted).toBeGreaterThan(0)
+  })
+
   it('ranks the candidates through the configured System One endpoint and replays the winner', async () => {
     mock = await createMockSystemOne()
     const ctx = new Context()

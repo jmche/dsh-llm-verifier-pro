@@ -281,6 +281,16 @@ export declare function sessionProviderEndpoint(ctx: Context, provider: string):
  */
 export declare function resolveBackend(ctx: Context, config: Config, conversation?: GenerateOptions): Promise<VerifierBackend>;
 /**
+ * The backends for pairwise scoring. With the Jev selector the LLM verifier
+ * scores nothing here, so a failure to resolve it (e.g. a missing
+ * `credential:` key) is logged and does not block Jev; the placeholder is
+ * never asked to score a comparison.
+ */
+export declare function resolvePairBackends(ctx: Context, config: Config, conversation?: GenerateOptions): Promise<{
+    backend: VerifierBackend;
+    jev?: JevBackend;
+}>;
+/**
  * The Jev selector for this call, or `undefined` when `config.selector` is not
  * `jev` (the LLM verifier scores the comparisons). The endpoint, model and key
  * come only from the jev* fields — never from the LLM verifier's endpoint.
@@ -308,7 +318,7 @@ export declare class VerifierService extends Service {
     private backend;
     constructor(ctx: Context, config: LiveConfig | Config);
     private backendFor;
-    private jevFor;
+    private pairBackends;
     /** Rank N candidates best-first with the PPT. */
     verify(options: {
         task: string;

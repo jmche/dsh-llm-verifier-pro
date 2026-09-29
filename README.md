@@ -190,7 +190,9 @@ responses as `state` and one ordered Score question per slot; the reward is the
 expectation over the Score levels, normalized to [0, 1] like the logprob
 expectation, so the tournament, slot swaps and Bradley–Terry aggregation are
 unchanged. A comparison typically returns in under a second. `verify_track`
-always stays on the LLM verifier. The default `selector: llm` changes nothing.
+always stays on the LLM verifier; an LLM verifier config that cannot resolve
+(e.g. a missing `credential:` key) is logged and does not block Jev. The
+default `selector: llm` changes nothing.
 
 The endpoint is provider-agnostic: `jevBaseUrl` is a `…/v1` base (the plugin
 appends `/systemone`) or the full `…/systemone` URL.

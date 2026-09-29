@@ -290,7 +290,7 @@ export async function verifyBest(
       + '<score_A> LETTER_A_TO_T </score_A>\n'
       + '<score_B> LETTER_A_TO_T </score_B>\n\n'
       + 'Begin your analysis now.'
-    const out = await backend.chat(prompt, { model })
+    const out = await backend.chat(prompt, { model, ...(opts.signal ? { signal: opts.signal } : {}) })
     const ra = extractScore(out.text, out.tokens, out.positionLogprobs, '<score_A>')
     const rb = extractScore(out.text, out.tokens, out.positionLogprobs, '<score_B>')
     return swap ? [rb, ra] : [ra, rb]
@@ -549,15 +549,26 @@ export async function* orchestrate(
     // Verify (INDEPENDENT wall-clock budget) and replay the winner's raw chunks.
     const verifyDeadline = Math.max(1, config.verifyTimeoutMs)
     const verifierModel = deps.verifierModel?.trim() || options.model
+    // The deadline aborts every in-flight verifier request, not just the wait.
+    const verifyAbort = new AbortController()
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined
     const verifyResult = await Promise.race([
       verifyBest(deps.backend, verifierModel, taskOf(options), usable.map(rollout => rollout.text), {
         criteria: config.criteria,
         pivots: config.pivots,
         seed: config.seed,
+        signal: verifyAbort.signal,
         ...(deps.jev ? { jev: deps.jev } : {}),
       }),
-      new Promise<never>((_, reject) => { setTimeout(() => reject(new Error('bo-n: verify deadline exceeded')), verifyDeadline).unref?.() }),
-    ])
+      new Promise<never>((_, reject) => {
+        deadlineTimer = setTimeout(() => {
+          const error = new Error('bo-n: verify deadline exceeded')
+          verifyAbort.abort(error)
+          reject(error)
+        }, verifyDeadline)
+        deadlineTimer.unref?.()
+      }),
+    ]).finally(() => clearTimeout(deadlineTimer))
     const winner = usable[verifyResult.bestIndex] ?? usable[0]
     if (winner !== undefined) {
       // Emit a per-candidate diagnostic (the paper's audit trail) and the winner.
