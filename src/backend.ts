@@ -230,6 +230,11 @@ export class VerifierBackend {
       })
       if (!res.ok) throw new VerifierError(`verifier backend /models returned ${res.status}`, res.status)
       body = (await res.json()) as { data?: Array<{ id?: string }> }
+    } catch (error) {
+      if (error instanceof VerifierError) throw error
+      // Same shape as post(): a timeout, abort or network failure is a VerifierError.
+      const reason = controller.signal.aborted ? controller.signal.reason : error
+      throw new VerifierError(`verifier /models lookup failed: ${reason instanceof Error ? reason.message : String(reason)}`, undefined, error)
     } finally {
       clearTimeout(timer)
       signal?.removeEventListener('abort', onAbort)

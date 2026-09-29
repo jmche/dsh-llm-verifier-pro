@@ -100,7 +100,7 @@ async function createMockSystemOne(): Promise<MockSystemOne> {
     close: () => {
       for (const timer of timers) clearTimeout(timer)
       timers.clear()
-      server.closeAllConnections()
+      server.closeAllConnections?.() // Node >= 18.2
       return new Promise((resolve) => server.close(() => resolve()))
     },
   }
@@ -245,8 +245,9 @@ describe('LLM verifier cancellation', () => {
   it('the /models lookup honors the request timeout without a caller signal', async () => {
     mock = await createMockSystemOne()
     const started = Date.now()
-    const outcome = await new Verifier({ baseUrl: mock.baseUrl, timeoutMs: 200 }).compare('p', 'a', 'b', { C: 'c' }).then(() => 'resolved', () => 'rejected')
-    expect(outcome).toBe('rejected')
+    const error = await new Verifier({ baseUrl: mock.baseUrl, timeoutMs: 200 }).compare('p', 'a', 'b', { C: 'c' }).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(VerifierError)
+    expect((error as Error).message).toContain('/models lookup timed out')
     expect(Date.now() - started).toBeLessThan(2000)
   })
 
@@ -294,7 +295,7 @@ describe('LLM verifier cancellation during prefill', () => {
       await new Promise((resolve) => setTimeout(resolve, 100))
       expect(droppedPrefill).toBeGreaterThan(0)
     } finally {
-      server.closeAllConnections()
+      server.closeAllConnections?.() // Node >= 18.2
       await new Promise((resolve) => server.close(() => resolve(undefined)))
     }
   })
