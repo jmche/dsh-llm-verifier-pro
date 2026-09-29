@@ -29,6 +29,9 @@
 - The Bo-N verify deadline now aborts every in-flight verifier request
   (LLM or Jev) instead of only abandoning the wait; the LLM comparisons of
   Best-of-N now receive the cancellation signal at all.
+- The LLM verifier forwards cancellation to its `/models` lookup and the
+  score-tag prefill pass too; a cancelled prefill stops the call instead of
+  degrading to point estimates.
 - `verify_select` with `onError: 'tie'` no longer records a caller abort as
   0.5/0.5 ties: an aborted selection rejects.
 

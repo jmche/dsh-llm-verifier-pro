@@ -208,7 +208,7 @@ export class VerifierBackend {
     return { extraBody: { thinking: { type: 'enabled' }, reasoning_effort: effort }, maxTokens }
   }
 
-  private async resolveModel(override?: string): Promise<string> {
+  private async resolveModel(override?: string, signal?: AbortSignal): Promise<string> {
     if (override) return override
     if (this.config.model) return this.config.model
     if (this.config.deepseek) return DEEPSEEK_MODEL
@@ -216,6 +216,7 @@ export class VerifierBackend {
     if (!this.config.baseUrl) throw new MissingAPIKeyError('set baseUrl or OPENAI_BASE_URL')
     const res = await fetch(`${this.config.baseUrl}/models`, {
       headers: { authorization: `Bearer ${this.config.apiKey ?? ''}` },
+      ...(signal ? { signal } : {}),
     })
     if (!res.ok) throw new VerifierError(`verifier backend /models returned ${res.status}`, res.status)
     const body = (await res.json()) as { data?: Array<{ id?: string }> }
@@ -290,6 +291,7 @@ export class VerifierBackend {
     messages: Array<Record<string, unknown>>,
     analysis: string,
     tags: string[],
+    signal?: AbortSignal,
   ): Promise<ChatResponse> {
     let fullText = analysis
     const tokens: string[] = []
@@ -311,7 +313,7 @@ export class VerifierBackend {
             continue_final_message: true,
             structured_outputs: { choice: choices },
           },
-        })
+        }, signal)
         this.usage.record(response)
         const choice = (response.choices as Array<Record<string, unknown>> | undefined)?.[0]
         const message = (choice?.message ?? {}) as Record<string, unknown>
@@ -353,6 +355,8 @@ export class VerifierBackend {
           [{ token: closing, logprob: 0 }],
         )
       } catch (error) {
+        // A cancelled call is not a prefill failure: stop, don't degrade.
+        if (signal?.aborted) throw error
         // A server without prefill support (or a thinking-mode endpoint that
         // rejects the synthetic assistant turn, e.g. DeepSeek's
         // "reasoning_content must be passed back") returns the tag-less
@@ -388,7 +392,7 @@ export class VerifierBackend {
           '(e.g. http://localhost:8000/v1 for vLLM, or https://api.deepseek.com for DeepSeek)',
       )
     }
-    const model = await this.resolveModel(opts.model)
+    const model = await this.resolveModel(opts.model, opts.signal)
     const messages = [{ role: 'user', content: prompt }]
     const { extraBody, maxTokens } = this.config.deepseek ? this.deepseekParams() : { extraBody: undefined, maxTokens: OPENAI_MAX_TOKENS }
     const params: Record<string, unknown> = {
@@ -447,7 +451,7 @@ export class VerifierBackend {
     if (tags.length > 0 && !this.config.deepseek && this.config.prefill && !mainScoreUsable) {
       const idx = Math.min(...tags.map((tag) => text.indexOf(tag)).filter((i) => i >= 0), text.length)
       const analysis = text.slice(0, idx).trimEnd()
-      const prefilled = await this.prefillTags(model, messages, analysis, tags)
+      const prefilled = await this.prefillTags(model, messages, analysis, tags, opts.signal)
       text = prefilled.text
       tokens = prefilled.tokens
       positionLogprobs = prefilled.positionLogprobs

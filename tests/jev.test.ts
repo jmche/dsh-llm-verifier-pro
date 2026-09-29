@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { AddressInfo } from 'node:net'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { Context } from '@deepseek-ai/cordis'
-import { apply, resolveJev, type Config } from '../src/index'
+import { apply, resolveJev, VerifierService, type Config } from '../src/index'
 import { JevBackend, JEV_LEVELS, systemOneEndpoint } from '../src/jev'
 import { Verifier } from '../src/verifier'
 import { verifyBest } from '../src/bon'
@@ -55,6 +55,17 @@ async function createMockSystemOne(): Promise<MockSystemOne> {
       const respond = (status: number, payload: unknown, headers: Record<string, string> = {}) => {
         res.writeHead(status, { 'content-type': 'application/json', ...headers })
         res.end(JSON.stringify(payload))
+      }
+      if (path === '/v1/chat/completions') {
+        // A slow LLM verifier: never answers before the client gives up.
+        res.on('close', () => { if (!res.writableEnded) control.aborted++ })
+        setTimeout(() => { if (!res.destroyed) respond(200, {}) }, 5000)
+        return
+      }
+      if (path === '/v1/models') {
+        res.on('close', () => { if (!res.writableEnded) control.aborted++ })
+        setTimeout(() => { if (!res.destroyed) respond(200, { data: [{ id: 'm' }] }) }, 5000)
+        return
       }
       if (path !== '/v1/systemone') return respond(404, { error: `unexpected ${path}` })
       const failure = failures.shift()
@@ -219,6 +230,69 @@ describe('cancellation with the Jev selector', () => {
   })
 })
 
+describe('LLM verifier cancellation', () => {
+  it('a caller abort also cancels the /models lookup', async () => {
+    mock = await createMockSystemOne()
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(new Error('cancelled')), 100)
+    const outcome = await new Verifier({ baseUrl: mock.baseUrl }).compare('p', 'a', 'b', { C: 'c' }, { signal: controller.signal }).then(() => 'resolved', () => 'rejected')
+    expect(outcome).toBe('rejected')
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(mock.requests.some((r) => r.path === '/v1/models')).toBe(true)
+    expect(mock.aborted).toBeGreaterThan(0)
+  })
+})
+
+describe('LLM verifier cancellation during prefill', () => {
+  it('a caller abort cancels the prefill pass instead of degrading to point estimates', async () => {
+    let chats = 0
+    let droppedPrefill = 0
+    const server = createServer((req, res) => {
+      req.resume()
+      req.on('end', () => {
+        chats++
+        if (chats === 1) {
+          // Main reply: analysis without score tags, so the prefill pass runs.
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ choices: [{ message: { content: 'analysis only' }, logprobs: { content: [{ token: 'x', top_logprobs: [{ token: 'x', logprob: 0 }] }] } }] }))
+          return
+        }
+        res.on('close', () => { if (!res.writableEnded) droppedPrefill++ })
+        setTimeout(() => { if (!res.destroyed) res.end('{}') }, 5000)
+      })
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as AddressInfo
+    try {
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(new Error('cancelled')), 200)
+      const started = Date.now()
+      const outcome = await new Verifier({ baseUrl: `http://127.0.0.1:${port}/v1`, model: 'm' })
+        .compare('p', 'a', 'b', { C: 'c' }, { signal: controller.signal })
+        .then(() => 'resolved', () => 'rejected')
+      expect(outcome).toBe('rejected')
+      expect(Date.now() - started).toBeLessThan(2000)
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      expect(droppedPrefill).toBeGreaterThan(0)
+    } finally {
+      server.closeAllConnections()
+      await new Promise((resolve) => server.close(() => resolve(undefined)))
+    }
+  })
+})
+
+describe('VerifierService with selector: jev and an unresolvable LLM verifier', () => {
+  it('compare/select/verify rank with Jev; track still fails loudly', async () => {
+    mock = await createMockSystemOne()
+    const service = new VerifierService(new Context(), { selector: 'jev', jevBaseUrl: mock.baseUrl, apiKey: 'credential:MISSING_LLM_KEY' } as Config)
+    const compared = await service.compare('pick', 'weak', 'GOOD', { C: 'c' })
+    expect(compared.scoreB).toBeGreaterThan(compared.scoreA)
+    expect((await service.select('pick', ['weak', 'GOOD'], { C: 'c' }, { nEvaluations: 1 })).index).toBe(1)
+    expect((await service.verify({ task: 'pick', candidates: ['GOOD', 'weak'] })).bestIndex).toBe(0)
+    await expect(service.track('pick', ['s1', 's2', 's3'])).rejects.toThrow(/MISSING_LLM_KEY/)
+  })
+})
+
 describe('resolveJev', () => {
   const ctx = new Context()
   it('warns once per unknown selector value', async () => {
@@ -287,6 +361,15 @@ describe('Bo-N turn with selector: jev', () => {
     const text = await boNHarness({ verifyTimeoutMsBoN: 200 })()
     expect(text).toContain('Best-of-N skipped')
     await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(mock.aborted).toBeGreaterThan(0)
+  })
+
+  it('with selector: llm the verify deadline aborts in-flight LLM comparisons', async () => {
+    mock = await createMockSystemOne()
+    const text = await boNHarness({ selector: 'llm', baseUrl: mock.baseUrl, model: 'llm-verifier', prefill: false, verifyTimeoutMsBoN: 200 })()
+    expect(text).toContain('Best-of-N skipped')
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(mock.requests.some((r) => r.path === '/v1/chat/completions')).toBe(true)
     expect(mock.aborted).toBeGreaterThan(0)
   })
 
