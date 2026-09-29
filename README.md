@@ -180,10 +180,46 @@ vLLM/SGLang prefill pass so score tags land exactly at the label position.
     showFooter: true
 ```
 
+### Jev as the selector (optional)
+
+`selector: jev` hands every **pairwise** comparison — Best-of-N ranking,
+`verify_select`, `verify_compare` — to a System One endpoint
+([TypeSafe Jev](https://docs.typesafe.ai/)) instead of the LLM verifier. Jev
+does not generate text: each comparison is one request with the task and both
+responses as `state` and one ordered Score question per slot; the reward is the
+expectation over the Score levels, normalized to [0, 1] like the logprob
+expectation, so the tournament, slot swaps and Bradley–Terry aggregation are
+unchanged. A comparison typically returns in under a second. `verify_track`
+always stays on the LLM verifier. The default `selector: llm` changes nothing.
+
+The endpoint is provider-agnostic: `jevBaseUrl` is a `…/v1` base (the plugin
+appends `/systemone`) or the full `…/systemone` URL.
+
+```yaml
+- id: llm-verifier-pro
+  config:
+    selector: jev
+    # TypeSafe directly (the default when jevBaseUrl/jevModel are empty):
+    #   jevBaseUrl: https://api.typesafe.ai/v1
+    #   jevModel: jev-latest
+    #   jevApiKey: env:TYPESAFE_API_KEY
+    # OpenCode Zen (jev-1.13-free is free for a limited time):
+    jevBaseUrl: https://opencode.ai/zen/v1
+    jevModel: jev-1.13-free
+    jevApiKey: env:OPENCODE_API_KEY   # credential:<name> | env:VAR | plain; empty sends no key
+```
+
+Jev's context budget is 32k tokens for the `state` plus the longest question;
+a comparison whose two responses exceed it returns HTTP 400
+(`max_tokens_exceeded`) and the turn fails open like any other verifier error.
+Jev 1.13 is weak at arithmetic, counting and dates
+([jaggedness notes](https://docs.typesafe.ai/model-jaggedness/jev-1.13.md)),
+and the state is sent to the configured provider — check its data policy.
+
 ### Configuring in the Web UI
 
 Open **Plugins → dsh-llm-verifier-pro** in `dsh web`: the bundle page carries a
-form for every parameter below except `apiKey`, `deepseek`, `prefill` and
+form for every parameter below except `apiKey`, `jevApiKey`, `deepseek`, `prefill` and
 `compare`/`select`/`track`. **Save** writes the same `cordis.patch.yml` block
 shown above, and the change applies to the next turn without a restart (the
 form's fields are `.volatile()` Config fields, which the Loader commits into
@@ -221,6 +257,10 @@ and renamed it `settings.yaml.imported`).
 | `autoDegrade` | `true` | Fall back to sampling scoring when the endpoint lacks logprobs. |
 | `baseUrl` / `apiKey` / `model` | `''` | Explicit verifier endpoint three-part; empty = follow the session. |
 | `maxConcurrency` | `8` | Max in-flight verifier calls. |
+| `selector` | `llm` | Pairwise scorer: `llm` (the verifier above) or `jev` (a System One endpoint). |
+| `jevBaseUrl` | TypeSafe | System One `…/v1` base or full `…/systemone` URL; empty = `https://api.typesafe.ai/v1`. |
+| `jevModel` | `jev-latest` | System One model id, e.g. `jev-1.13-free` on OpenCode Zen. |
+| `jevApiKey` | `''` | `credential:<name>`, `env:VAR` or plain; empty sends no Authorization header. |
 | `deepseek` | auto | Force the DeepSeek call path. |
 | `prefill` | `true` | vLLM/SGLang score-tag prefill pass. |
 | `compare` / `select` / `track` | `true` | Register the three `verify_*` tools. |

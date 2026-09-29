@@ -17,6 +17,10 @@
 #       apiKey: credential:OMNI_CHAT_API_KEY
 #       boN: false            # master switch; this config is the only place it lives
 #       boNCandidates: 5
+#       selector: llm         # 'jev' scores pairwise comparisons on a System One endpoint:
+#       # jevBaseUrl: https://opencode.ai/zen/v1   (empty → https://api.typesafe.ai/v1)
+#       # jevModel: jev-1.13-free                  (empty → jev-latest)
+#       # jevApiKey: env:OPENCODE_API_KEY          (empty → no key)
 #
 # Credentials resolve: plugin config → OPENAI_BASE_URL/OPENAI_API_KEY →
 # DEEPSEEK_API_KEY. Also accepts the dsh credentials seam reference form

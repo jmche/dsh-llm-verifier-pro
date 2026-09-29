@@ -27,10 +27,13 @@ import z from '@deepseek-ai/schemastery';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { VerifierBackend } from './backend.js';
 import { type CompareOptions, type SelectOptions, type TrackOptions } from './verifier.js';
+import { JevBackend } from './jev.js';
 import type { TokenUsageSnapshot } from './backend.js';
 export { VerifierBackend, TokenUsage, MissingAPIKeyError, VerifierError, } from './backend.js';
 export type { BackendConfig, TokenUsageSnapshot } from './backend.js';
 export { Verifier } from './verifier.js';
+export { JevBackend, DEFAULT_JEV_BASE_URL, DEFAULT_JEV_MODEL, systemOneEndpoint } from './jev.js';
+export type { JevConfig } from './jev.js';
 export { extractScore, SCALE, GRANULARITY, normalizeCriteria, buildPairwisePrompt } from './scoring.js';
 export type { Criterion, CriteriaInput, LogprobToken, VerifierOutput } from './scoring.js';
 export { selectBest, bradleyTerry, ringCycle, pivotRoundPairs, selectPivots, createRng, DEFAULT_PIVOTS, accumulate } from './tournament.js';
@@ -71,6 +74,19 @@ export interface Config {
      * `false` is strict mode and raises instead of silently downgrading.
      */
     autoDegrade?: boolean;
+    /**
+     * Who scores the pairwise comparisons of Best-of-N, verify_select and
+     * verify_compare: `llm` (default) — the verifier endpoint above, logprob
+     * expectation; `jev` — a System One endpoint (TypeSafe Jev) with Score
+     * questions. verify_track always uses the LLM verifier.
+     */
+    selector?: string;
+    /** System One base URL (`…/v1`) or full `…/systemone` endpoint. Empty → TypeSafe (https://api.typesafe.ai/v1). */
+    jevBaseUrl?: string;
+    /** System One model id. Empty → `jev-latest`. */
+    jevModel?: string;
+    /** Jev API key: `credential:<name>`, `env:VAR`, or a plain value. Empty sends no key. */
+    jevApiKey?: string;
     /** Register `verify_compare`. Defaults to true. */
     compare?: boolean;
     /** Register `verify_select`. Defaults to true. */
@@ -144,6 +160,10 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     deepseek: z<boolean, boolean, "plain">;
     prefill: z<boolean, boolean, "plain">;
     autoDegrade: z<boolean, boolean, "volatile-defined">;
+    selector: z<string, string, "volatile-defined">;
+    jevBaseUrl: z<string, string, "volatile">;
+    jevModel: z<string, string, "volatile">;
+    jevApiKey: z<string, string, "plain">;
     compare: z<boolean, boolean, "defined">;
     select: z<boolean, boolean, "defined">;
     track: z<boolean, boolean, "defined">;
@@ -174,6 +194,10 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     deepseek: z<boolean, boolean, "plain">;
     prefill: z<boolean, boolean, "plain">;
     autoDegrade: z<boolean, boolean, "volatile-defined">;
+    selector: z<string, string, "volatile-defined">;
+    jevBaseUrl: z<string, string, "volatile">;
+    jevModel: z<string, string, "volatile">;
+    jevApiKey: z<string, string, "plain">;
     compare: z<boolean, boolean, "defined">;
     select: z<boolean, boolean, "defined">;
     track: z<boolean, boolean, "defined">;
@@ -256,6 +280,12 @@ export declare function sessionProviderEndpoint(ctx: Context, provider: string):
  *  3. model falls back to the conversation's own model (any provider route).
  */
 export declare function resolveBackend(ctx: Context, config: Config, conversation?: GenerateOptions): Promise<VerifierBackend>;
+/**
+ * The Jev selector for this call, or `undefined` when `config.selector` is not
+ * `jev` (the LLM verifier scores the comparisons). The endpoint, model and key
+ * come only from the jev* fields — never from the LLM verifier's endpoint.
+ */
+export declare function resolveJev(ctx: Context, config: Config): Promise<JevBackend | undefined>;
 /** The Bo-N mode decision for one conversation request. */
 export interface BoNModeDecision {
     readonly enabled: boolean;
@@ -278,6 +308,7 @@ export declare class VerifierService extends Service {
     private backend;
     constructor(ctx: Context, config: LiveConfig | Config);
     private backendFor;
+    private jevFor;
     /** Rank N candidates best-first with the PPT. */
     verify(options: {
         task: string;

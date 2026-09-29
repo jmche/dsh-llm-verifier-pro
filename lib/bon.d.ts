@@ -16,6 +16,7 @@
  */
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
 import type { VerifierBackend } from './backend.js';
+import type { JevBackend } from './jev.js';
 import { extractScore } from './scoring.js';
 export { extractScore };
 /** Bo-N sampling knobs (the orchestration's slice of the plugin Config). */
@@ -131,6 +132,8 @@ export declare function verifyBest(backend: VerifierBackend, model: string, task
     seed?: number;
     nEvaluations?: number;
     signal?: AbortSignal;
+    /** When set, every comparison is scored by this Jev selector instead of `backend`. */
+    jev?: JevBackend;
 }): Promise<VerifyResult & {
     callsSpent: number;
 }>;
@@ -142,6 +145,8 @@ export interface OrchestrateDeps {
     backend: VerifierBackend;
     /** The resolved verifier model; overrides the plugin's model resolution when set. */
     verifierModel?: string;
+    /** The Jev selector; when set it ranks the candidates instead of `backend`. */
+    jev?: JevBackend;
     /** Called once a winner is selected, with the structured Best-of-N summary. */
     onTurnSummary?: (summary: BoNTurnSummary) => void;
 }

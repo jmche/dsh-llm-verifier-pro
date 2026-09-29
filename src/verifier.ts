@@ -8,6 +8,7 @@
  */
 
 import { VerifierBackend, type BackendConfig, type TokenUsageSnapshot } from './backend.js'
+import type { JevBackend } from './jev.js'
 import {
   buildPairwisePrompt,
   extractScore,
@@ -108,9 +109,17 @@ function throwIfAborted(signal?: AbortSignal): void {
 
 export class Verifier {
   readonly backend: VerifierBackend
+  /** When set, pairwise rewards (compare/select) come from this Jev selector; track stays on the LLM backend. */
+  readonly jev: JevBackend | undefined
 
-  constructor(config: BackendConfig = {}) {
+  constructor(config: BackendConfig = {}, jev?: JevBackend) {
     this.backend = new VerifierBackend(config)
+    this.jev = jev
+  }
+
+  /** The backend that runs and accounts for pairwise comparisons. */
+  private get pairBackend(): Pick<VerifierBackend, 'runAll' | 'usage'> {
+    return this.jev ?? this.backend
   }
 
   /** Score (A, B) for a single criterion: fine-grained rewards (R_A, R_B) in [0, 1]. */
@@ -124,6 +133,7 @@ export class Verifier {
     signal?: AbortSignal,
   ): Promise<[number, number]> {
     throwIfAborted(signal)
+    if (this.jev) return this.jev.scorePair(problem, traceA, traceB, criterion, groundTruthNote, signal)
     const prompt = buildPairwisePrompt(problem, traceA, traceB, criterion, groundTruthNote)
     const out = await this.backend.chat(prompt, { ...(model ? { model } : {}), ...(signal ? { signal } : {}) })
     const ra = extractScore(out.text, out.tokens, out.positionLogprobs, '<score_A>')
@@ -151,7 +161,7 @@ export class Verifier {
     const jobs = criteria.flatMap((criterion) =>
       Array.from({ length: nEvaluations }, () => criterion),
     )
-    const results = await this.backend.runAll(
+    const results = await this.pairBackend.runAll(
       jobs.map((criterion) => () =>
         this.scorePairCriterion(problem, traceA, traceB, criterion, note, opts.model, opts.signal),
       ),
@@ -162,7 +172,7 @@ export class Verifier {
       scoreA,
       scoreB,
       criteria: criteria.map((c) => c.id),
-      usage: this.backend.usage.snapshot(),
+      usage: this.pairBackend.usage.snapshot(),
     }
   }
 
@@ -196,7 +206,7 @@ export class Verifier {
         ranking: [0],
         nComparisons: 0,
         criteria: criterionIds,
-        usage: this.backend.usage.snapshot(),
+        usage: this.pairBackend.usage.snapshot(),
       }
     }
 
@@ -248,7 +258,7 @@ export class Verifier {
           }
         }
       }
-      await this.backend.runAll(
+      await this.pairBackend.runAll(
         jobs.map((job) => async () => {
           try {
             let [ra, rb] = await this.scorePairCriterion(problem, job.traceA, job.traceB, job.criterion, note, opts.model, opts.signal)
@@ -300,7 +310,7 @@ export class Verifier {
       ranking,
       nComparisons: ring.length + prPairs.length,
       criteria: criterionIds,
-      usage: this.backend.usage.snapshot(),
+      usage: this.pairBackend.usage.snapshot(),
     }
   }
 

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Jev selector (System One)
+- New `selector` field: `llm` (default, unchanged behavior) or `jev`. With
+  `jev`, every pairwise comparison of Best-of-N, `verify_select` and
+  `verify_compare` is one System One request (`state` = task + both
+  responses, one 9-level Score question per slot); the reward is the Score
+  expectation normalized to [0, 1], so the PPT, slot swaps and Bradley–Terry
+  aggregation are unchanged. `verify_track` stays on the LLM verifier.
+- The endpoint is provider-agnostic: `jevBaseUrl` (`…/v1` base or full
+  `…/systemone` URL, default TypeSafe), `jevModel` (default `jev-latest`) and
+  `jevApiKey` (`credential:`/`env:`/plain; empty sends no key, which keyless
+  free tiers such as OpenCode Zen's `jev-1.13-free` accept). `selector`,
+  `jevBaseUrl` and `jevModel` are on the Plugins-page form; `jevApiKey` is a
+  secret and stays in the profile patch.
+- HTTP 429/529 are retried up to three times with backoff (honoring
+  `retry-after`), as the provider documents; any other failure — including
+  HTTP 400 `max_tokens_exceeded` past Jev's 32k state budget — surfaces as a
+  `VerifierError` and fails open like the LLM path. The Bo-N footer shows
+  `· Jev` when Jev ranked the turn.
+
 ### Web configuration form restored (Plugins page)
 dsh 0.1.7 draws no form for a third-party plugin by itself: `dsh-settings`
 serves only `.volatile()` Config fields, and the Plugins page renders only

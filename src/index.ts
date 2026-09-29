@@ -31,6 +31,7 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { VerifierBackend, type BackendConfig } from './backend.js'
 import { Verifier, type CompareOptions, type SelectOptions, type TrackOptions } from './verifier.js'
+import { JevBackend } from './jev.js'
 import type { TokenUsageSnapshot } from './backend.js'
 import { orchestrate, isInternalRequest, markInternalRequest, verifyBest, taskOf } from './bon.js'
 import type { BoNConfig, BoNTurnSummary } from './bon.js'
@@ -52,6 +53,8 @@ export {
 } from './backend.js'
 export type { BackendConfig, TokenUsageSnapshot } from './backend.js'
 export { Verifier } from './verifier.js'
+export { JevBackend, DEFAULT_JEV_BASE_URL, DEFAULT_JEV_MODEL, systemOneEndpoint } from './jev.js'
+export type { JevConfig } from './jev.js'
 export { extractScore, SCALE, GRANULARITY, normalizeCriteria, buildPairwisePrompt } from './scoring.js'
 export type { Criterion, CriteriaInput, LogprobToken, VerifierOutput } from './scoring.js'
 export { selectBest, bradleyTerry, ringCycle, pivotRoundPairs, selectPivots, createRng, DEFAULT_PIVOTS, accumulate } from './tournament.js'
@@ -96,6 +99,20 @@ export interface Config {
    * `false` is strict mode and raises instead of silently downgrading.
    */
   autoDegrade?: boolean
+  // ── selector ──
+  /**
+   * Who scores the pairwise comparisons of Best-of-N, verify_select and
+   * verify_compare: `llm` (default) — the verifier endpoint above, logprob
+   * expectation; `jev` — a System One endpoint (TypeSafe Jev) with Score
+   * questions. verify_track always uses the LLM verifier.
+   */
+  selector?: string
+  /** System One base URL (`…/v1`) or full `…/systemone` endpoint. Empty → TypeSafe (https://api.typesafe.ai/v1). */
+  jevBaseUrl?: string
+  /** System One model id. Empty → `jev-latest`. */
+  jevModel?: string
+  /** Jev API key: `credential:<name>`, `env:VAR`, or a plain value. Empty sends no key. */
+  jevApiKey?: string
   /** Register `verify_compare`. Defaults to true. */
   compare?: boolean
   /** Register `verify_select`. Defaults to true. */
@@ -169,6 +186,10 @@ export const Config = z.object({
   deepseek: z.boolean(),
   prefill: z.boolean(),
   autoDegrade: z.boolean().default(true).volatile(),
+  selector: z.string().default('llm').volatile(),
+  jevBaseUrl: z.string().volatile(),
+  jevModel: z.string().volatile(),
+  jevApiKey: z.string(),
   compare: z.boolean().default(true),
   select: z.boolean().default(true),
   track: z.boolean().default(true),
@@ -258,19 +279,22 @@ function resolveApiKeyOverride(raw: string): string {
   return raw
 }
 
+/** Resolve an explicit key value: `credential:<name>`, `env:VAR`, or a plain value. */
+async function resolveExplicitKey(ctx: Context, explicit: string): Promise<string> {
+  if (explicit.startsWith('credential:')) {
+    const credentials = ctx.get('credentials')
+    const ref = credentialRef(explicit.slice('credential:'.length))
+    const hit = credentials === undefined ? undefined : await credentials.resolve(ref)
+    if (hit === undefined) throw new Error(`verifier: credential "${explicit.slice('credential:'.length)}" is not configured`)
+    return hit.value
+  }
+  return resolveApiKeyOverride(explicit)
+}
+
 /** Resolve one API key from the full chain. */
 async function resolveApiKey(ctx: Context, config: Config, apiKeyEnv: string): Promise<string | undefined> {
   const explicit = (config.apiKey ?? '').trim()
-  if (explicit.length > 0) {
-    if (explicit.startsWith('credential:')) {
-      const credentials = ctx.get('credentials')
-      const ref = credentialRef(explicit.slice('credential:'.length))
-      const hit = credentials === undefined ? undefined : await credentials.resolve(ref)
-      if (hit === undefined) throw new Error(`verifier: credential "${explicit.slice('credential:'.length)}" is not configured`)
-      return hit.value
-    }
-    return resolveApiKeyOverride(explicit)
-  }
+  if (explicit.length > 0) return resolveExplicitKey(ctx, explicit)
   const credentials = ctx.get('credentials')
   const ref = credentialRef(apiKeyEnv)
   const hit = credentials === undefined ? undefined : await credentials.resolve(ref)
@@ -401,6 +425,25 @@ export async function resolveBackend(
   return new VerifierBackend(backendConfig)
 }
 
+/**
+ * The Jev selector for this call, or `undefined` when `config.selector` is not
+ * `jev` (the LLM verifier scores the comparisons). The endpoint, model and key
+ * come only from the jev* fields — never from the LLM verifier's endpoint.
+ */
+export async function resolveJev(ctx: Context, config: Config): Promise<JevBackend | undefined> {
+  if ((config.selector ?? 'llm').trim() !== 'jev') return undefined
+  const explicit = (config.jevApiKey ?? '').trim()
+  const jev = new JevBackend({
+    baseUrl: config.jevBaseUrl,
+    model: config.jevModel,
+    apiKey: explicit ? await resolveExplicitKey(ctx, explicit) : undefined,
+    timeoutMs: config.timeoutMs,
+    maxConcurrency: config.maxConcurrency,
+  })
+  console.error(`[verifier] selector: jev endpoint=${jev.config.endpoint} model=${jev.config.model}`)
+  return jev
+}
+
 /** The Bo-N mode decision for one conversation request. */
 export interface BoNModeDecision {
   readonly enabled: boolean
@@ -438,15 +481,21 @@ export class VerifierService extends Service {
     return resolveBackend(this.ctx, currentConfig(this.config), conversation)
   }
 
+  private async jevFor(): Promise<JevBackend | undefined> {
+    return resolveJev(this.ctx, currentConfig(this.config))
+  }
+
   /** Rank N candidates best-first with the PPT. */
   async verify(options: { task: string; candidates: readonly string[]; criteria?: Record<string, string>; pivots?: number; seed?: number; nEvaluations?: number }): Promise<{ bestIndex: number; ranking: { index: number; score: number; normalized: number }[]; callsSpent: number }> {
     if (options.candidates.length < 2) throw new Error('verifier: at least 2 candidates are required')
     const backend = await this.backendFor()
+    const jev = await this.jevFor()
     const result = await verifyBest(backend, backend.config.model ?? 'deepseek-v4-flash', options.task, options.candidates, {
       criteria: options.criteria ? Object.keys(options.criteria) : undefined,
       pivots: options.pivots,
       seed: options.seed,
       nEvaluations: options.nEvaluations,
+      ...(jev ? { jev } : {}),
     })
     return { bestIndex: result.bestIndex, ranking: result.ranking as never, callsSpent: result.callsSpent }
   }
@@ -454,14 +503,14 @@ export class VerifierService extends Service {
   /** Fine-grained rewards for one directed comparison. */
   async compare(problem: string, traceA: string, traceB: string, criteriaInput: Record<string, string>, opts?: CompareOptions): Promise<{ scoreA: number; scoreB: number; criteria: string[]; usage: TokenUsageSnapshot }> {
     const backend = await this.backendFor()
-    const verifier = new Verifier(backend.config)
+    const verifier = new Verifier(backend.config, await this.jevFor())
     return verifier.compare(problem, traceA, traceB, criteriaInput, opts)
   }
 
   /** PPT best-of-N selection (tool face parity). */
   async select(problem: string, candidates: string[], criteriaInput: Record<string, string>, opts?: SelectOptions): Promise<{ index: number; best: string; scores: number[]; ranking: number[]; nComparisons: number; criteria: string[]; usage: TokenUsageSnapshot }> {
     const backend = await this.backendFor()
-    const verifier = new Verifier(backend.config)
+    const verifier = new Verifier(backend.config, await this.jevFor())
     return verifier.select(problem, candidates, criteriaInput, opts)
   }
 
@@ -554,7 +603,7 @@ export function apply(ctx: Context, config: LiveConfig | Config): void {
       isConcurrencySafe: () => true,
       async execute(args, exec) {
         const backend = await backendFor()
-        const verifier = new Verifier(backend.config)
+        const verifier = new Verifier(backend.config, await service['jevFor']())
         const result = await verifier.compare(args.problem, args.candidateA, args.candidateB, args.criteria as Record<string, string>, {
           nEvaluations: args.nEvaluations ?? 1,
           groundTruthNote: args.groundTruthNote,
@@ -609,7 +658,7 @@ export function apply(ctx: Context, config: LiveConfig | Config): void {
       isConcurrencySafe: () => true,
       async execute(args, exec) {
         const backend = await backendFor()
-        const verifier = new Verifier(backend.config)
+        const verifier = new Verifier(backend.config, await service['jevFor']())
         const result = await verifier.select(args.problem, args.candidates, args.criteria as Record<string, string>, {
           nEvaluations: args.nEvaluations ?? 4,
           pivots: args.pivots ?? 2,
@@ -759,8 +808,10 @@ export function apply(ctx: Context, config: LiveConfig | Config): void {
       }
       console.error(`[bo-n] mode: ${decision.source} (n=${String(decision.nCandidates)})`)
       let backend: VerifierBackend
+      let jev: JevBackend | undefined
       try {
         backend = await resolveBackend(ctx, cfg, options)
+        jev = await resolveJev(ctx, cfg)
       } catch (error) {
         console.error(`[bo-n] verifier config unavailable, degrading to normal answer: ${error instanceof Error ? error.message : String(error)}`)
         yield* next()
@@ -790,6 +841,7 @@ export function apply(ctx: Context, config: LiveConfig | Config): void {
           stream: request => ctx.llm.stream(request),
           backend,
           verifierModel: backend.config.model,
+          ...(jev ? { jev } : {}),
           onTurnSummary: (summary) => {
             const list = summariesBySession.get(sessionId) ?? []
             list.push({ ...summary, turn: currentTurnOf(sessionId) })

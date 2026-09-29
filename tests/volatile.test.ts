@@ -19,10 +19,11 @@ const PANEL_FIELDS = [
   'verifier', 'baseUrl', 'model', 'timeoutMs', 'maxConcurrency', 'autoDegrade',
   'boN', 'boNCandidates', 'samplingTemperature', 'samplingMode', 'timeoutMsBoN',
   'verifyTimeoutMsBoN', 'showFooter', 'criteria', 'boNPivots', 'boNSeed', 'boNModelMix',
+  'selector', 'jevBaseUrl', 'jevModel',
 ] as const
 
 /** Fields that stay ordinary: a secret, the call-path overrides, and the tool registration flags read once at apply. */
-const ORDINARY_FIELDS = ['apiKey', 'deepseek', 'prefill', 'compare', 'select', 'track'] as const
+const ORDINARY_FIELDS = ['apiKey', 'jevApiKey', 'deepseek', 'prefill', 'compare', 'select', 'track'] as const
 
 function textStream(text: string): AsyncIterable<StreamChunk> {
   return (async function* () {

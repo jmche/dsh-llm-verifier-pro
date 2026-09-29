@@ -7,6 +7,7 @@
  * @module dsh-llm-as-a-verifier/verifier
  */
 import { VerifierBackend, type BackendConfig, type TokenUsageSnapshot } from './backend.js';
+import type { JevBackend } from './jev.js';
 import { type CriteriaInput } from './scoring.js';
 export interface CompareOptions {
     /** Repeated verifications K per criterion. Defaults to 1. */
@@ -79,7 +80,11 @@ export interface TrackResult {
 }
 export declare class Verifier {
     readonly backend: VerifierBackend;
-    constructor(config?: BackendConfig);
+    /** When set, pairwise rewards (compare/select) come from this Jev selector; track stays on the LLM backend. */
+    readonly jev: JevBackend | undefined;
+    constructor(config?: BackendConfig, jev?: JevBackend);
+    /** The backend that runs and accounts for pairwise comparisons. */
+    private get pairBackend();
     /** Score (A, B) for a single criterion: fine-grained rewards (R_A, R_B) in [0, 1]. */
     private scorePairCriterion;
     /**

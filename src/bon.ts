@@ -18,6 +18,7 @@
 import { BlockAssembler } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { VerifierBackend } from './backend.js'
+import type { JevBackend } from './jev.js'
 import { extractScore } from './scoring.js'
 import { bradleyTerry, ringCycle, pivotRoundPairs, selectPivots, createRng, accumulate } from './tournament.js'
 
@@ -240,6 +241,8 @@ export async function verifyBest(
     seed?: number
     nEvaluations?: number
     signal?: AbortSignal
+    /** When set, every comparison is scored by this Jev selector instead of `backend`. */
+    jev?: JevBackend
   } = {},
 ): Promise<VerifyResult & { callsSpent: number }> {
   const criteria = opts.criteria?.length ? opts.criteria : ['correctness']
@@ -263,6 +266,10 @@ export async function verifyBest(
   ): Promise<[number, number]> => {
     const traceA = swap ? candidates[b]! : candidates[a]!
     const traceB = swap ? candidates[a]! : candidates[b]!
+    if (opts.jev) {
+      const [ra, rb] = await opts.jev.scorePair(task, traceA, traceB, { name: criterion, description: criterion }, '', opts.signal)
+      return swap ? [rb, ra] : [ra, rb]
+    }
     const prompt = 'You are an expert evaluator of AI coding agents. You will see a task description and two agent trajectories, then evaluate them on ONE specific criterion, stated at the end.\n\n'
       + `**Task:**\n${task}\n\n`
       + `**Trajectory A:**\n${traceA}\n\n`
@@ -303,7 +310,7 @@ export async function verifyBest(
         }
       }
     }
-    const results = await backend.runAll(
+    const results = await (opts.jev ?? backend).runAll(
       jobs.map(job => () => scorePairCriterion(job.a, job.b, job.criterion, job.swap)),
     )
     jobs.forEach((job, i) => {
@@ -389,6 +396,8 @@ export interface OrchestrateDeps {
   backend: VerifierBackend
   /** The resolved verifier model; overrides the plugin's model resolution when set. */
   verifierModel?: string
+  /** The Jev selector; when set it ranks the candidates instead of `backend`. */
+  jev?: JevBackend
   /** Called once a winner is selected, with the structured Best-of-N summary. */
   onTurnSummary?: (summary: BoNTurnSummary) => void
 }
@@ -545,6 +554,7 @@ export async function* orchestrate(
         criteria: config.criteria,
         pivots: config.pivots,
         seed: config.seed,
+        ...(deps.jev ? { jev: deps.jev } : {}),
       }),
       new Promise<never>((_, reject) => { setTimeout(() => reject(new Error('bo-n: verify deadline exceeded')), verifyDeadline).unref?.() }),
     ])
@@ -575,10 +585,11 @@ export async function* orchestrate(
       })
       // Replay the winner verbatim, optionally with a muted Best-of-N footer.
       const gap = winnerScore - runnerUpScore
-      const verifierTokens = deps.backend.usage.snapshot().inputTokens + deps.backend.usage.snapshot().outputTokens
+      const verifierUsage = (deps.jev ?? deps.backend).usage.snapshot()
+      const verifierTokens = verifierUsage.inputTokens + verifierUsage.outputTokens
       const totalTokens = rolloutTokens(collected) + verifierTokens
       const degradeTag = dropped > 0 ? ` · ${String(collected.length)} sampled, ${String(dropped)} incomplete` : ''
-      const scoringNote = deps.backend.lastGradingMode === 'sampling' ? ' · sampling scoring' : ''
+      const scoringNote = deps.jev ? ' · Jev' : deps.backend.lastGradingMode === 'sampling' ? ' · sampling scoring' : ''
       const footer = config.showFooter
         ? `⚡ Best-of-N${degradeTag}${scoringNote} · ${String(usable.length)}-choose-1 → candidate #${String(verifyResult.bestIndex)} · ${winnerScore.toFixed(1)}/20 · ${gap.toFixed(2)} pts above runner-up · ${formatElapsed(Date.now() - startedAt)} · ${formatTokens(totalTokens)}`
         : undefined

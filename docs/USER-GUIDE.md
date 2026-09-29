@@ -49,6 +49,11 @@ Override the bundle defaults in the profile's `cordis.patch.yml`:
     timeoutMsBoN: 120000        # Sampling-phase budget (independent of the verify phase)
     verifyTimeoutMsBoN: 90000   # Verify-phase budget
     showFooter: true
+    # ── Selector: who scores pairwise comparisons (Bo-N, verify_select, verify_compare) ──
+    selector: llm           # 'llm' (default) or 'jev' (System One endpoint; verify_track stays on the LLM)
+    jevBaseUrl: https://opencode.ai/zen/v1   # …/v1 base or full …/systemone URL; empty = https://api.typesafe.ai/v1
+    jevModel: jev-1.13-free                  # empty = jev-latest
+    jevApiKey: env:OPENCODE_API_KEY          # credential:<name> | env:VAR | plain; empty sends no key
 ```
 
 ## The three usage surfaces
