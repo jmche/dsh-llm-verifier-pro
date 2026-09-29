@@ -45,6 +45,12 @@ async function createMockSystemOne(): Promise<MockSystemOne> {
   const requests: Logged[] = []
   const failures: MockSystemOne['failures'] = []
   const control = { delayMs: 0, aborted: 0 }
+  const timers = new Set<ReturnType<typeof setTimeout>>()
+  /** A delayed answer whose timer `close()` clears. */
+  const later = (fn: () => void, ms: number) => {
+    const timer = setTimeout(() => { timers.delete(timer); fn() }, ms)
+    timers.add(timer)
+  }
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     let data = ''
     req.on('data', (chunk: Buffer) => (data += chunk.toString()))
@@ -59,12 +65,12 @@ async function createMockSystemOne(): Promise<MockSystemOne> {
       if (path === '/v1/chat/completions') {
         // A slow LLM verifier: never answers before the client gives up.
         res.on('close', () => { if (!res.writableEnded) control.aborted++ })
-        setTimeout(() => { if (!res.destroyed) respond(200, {}) }, 5000)
+        later(() => { if (!res.destroyed) respond(200, {}) }, 5000)
         return
       }
       if (path === '/v1/models') {
         res.on('close', () => { if (!res.writableEnded) control.aborted++ })
-        setTimeout(() => { if (!res.destroyed) respond(200, { data: [{ id: 'm' }] }) }, 5000)
+        later(() => { if (!res.destroyed) respond(200, { data: [{ id: 'm' }] }) }, 5000)
         return
       }
       if (path !== '/v1/systemone') return respond(404, { error: `unexpected ${path}` })
@@ -77,7 +83,7 @@ async function createMockSystemOne(): Promise<MockSystemOne> {
         answers: { score_A: scoreAnswer(levelOf(state.response_A)), score_B: scoreAnswer(levelOf(state.response_B)) },
         usage: { input_tokens: 300, output_tokens: 20 },
       })
-      if (control.delayMs > 0) setTimeout(() => { if (!res.destroyed) answer() }, control.delayMs)
+      if (control.delayMs > 0) later(() => { if (!res.destroyed) answer() }, control.delayMs)
       else answer()
     })
   })
@@ -91,7 +97,12 @@ async function createMockSystemOne(): Promise<MockSystemOne> {
     set delayMs(ms: number) { control.delayMs = ms },
     get aborted() { return control.aborted },
     set aborted(n: number) { control.aborted = n },
-    close: () => new Promise((resolve) => server.close(() => resolve())),
+    close: () => {
+      for (const timer of timers) clearTimeout(timer)
+      timers.clear()
+      server.closeAllConnections()
+      return new Promise((resolve) => server.close(() => resolve()))
+    },
   }
 }
 
@@ -231,6 +242,14 @@ describe('cancellation with the Jev selector', () => {
 })
 
 describe('LLM verifier cancellation', () => {
+  it('the /models lookup honors the request timeout without a caller signal', async () => {
+    mock = await createMockSystemOne()
+    const started = Date.now()
+    const outcome = await new Verifier({ baseUrl: mock.baseUrl, timeoutMs: 200 }).compare('p', 'a', 'b', { C: 'c' }).then(() => 'resolved', () => 'rejected')
+    expect(outcome).toBe('rejected')
+    expect(Date.now() - started).toBeLessThan(2000)
+  })
+
   it('a caller abort also cancels the /models lookup', async () => {
     mock = await createMockSystemOne()
     const controller = new AbortController()

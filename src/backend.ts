@@ -214,12 +214,26 @@ export class VerifierBackend {
     if (this.config.deepseek) return DEEPSEEK_MODEL
     if (this.resolvedModel) return this.resolvedModel
     if (!this.config.baseUrl) throw new MissingAPIKeyError('set baseUrl or OPENAI_BASE_URL')
-    const res = await fetch(`${this.config.baseUrl}/models`, {
-      headers: { authorization: `Bearer ${this.config.apiKey ?? ''}` },
-      ...(signal ? { signal } : {}),
-    })
-    if (!res.ok) throw new VerifierError(`verifier backend /models returned ${res.status}`, res.status)
-    const body = (await res.json()) as { data?: Array<{ id?: string }> }
+    // Same budget and cancellation as post(): the request timeout or the caller's abort.
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(new Error(`verifier /models lookup timed out after ${this.config.timeoutMs}ms`)), this.config.timeoutMs)
+    const onAbort = () => controller.abort(signal?.reason)
+    if (signal) {
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    }
+    let body: { data?: Array<{ id?: string }> }
+    try {
+      const res = await fetch(`${this.config.baseUrl}/models`, {
+        headers: { authorization: `Bearer ${this.config.apiKey ?? ''}` },
+        signal: controller.signal,
+      })
+      if (!res.ok) throw new VerifierError(`verifier backend /models returned ${res.status}`, res.status)
+      body = (await res.json()) as { data?: Array<{ id?: string }> }
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    }
     const id = body.data?.[0]?.id
     if (!id) throw new VerifierError('verifier backend /models returned no model ids')
     this.resolvedModel = id
